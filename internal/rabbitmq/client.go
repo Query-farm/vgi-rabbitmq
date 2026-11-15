@@ -472,6 +472,12 @@ func (c *conn) getPage(ctx context.Context, path string, params url.Values, page
 	if err != nil {
 		return nil, err
 	}
+	if arr, ok := v.([]any); ok {
+		// Some scoped endpoints (e.g. /api/vhosts/{vhost}/connections) ignore
+		// pagination and answer with the whole list: one page.
+		items, err := asObjects(path, arr)
+		return &page{Items: items, PageCount: pageNum}, err
+	}
 	m, ok := v.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("rabbitmq /api%s: expected a paginated object, got %T", path, v)

@@ -1,0 +1,54 @@
+{
+ "GET /broken/api/health/checks/alarms": {
+  "body": "{\"status\": \"failed\", \"reason\": \"There are alarms in effect in the cluster\", \"alarms\": [{\"node\": \"rabbit@b\", \"resource\": \"memory\"}]}",
+  "status": 503
+ },
+ "GET /broken/api/health/checks/below-node-connection-limit": {
+  "body": "{\"error\": \"Object Not Found\", \"reason\": \"Not Found\"}",
+  "status": 404
+ },
+ "GET /broken/api/health/checks/certificate-expiration/30/days": {
+  "body": "{\"status\": \"failed\", \"reason\": \"Certificates expiring\", \"expired\": [{\"node\": \"rabbit@a\", \"protocol\": \"amqp/ssl\", \"port\": 5671, \"certfile\": \"/etc/rabbitmq/server.pem\"}]}",
+  "status": 503
+ },
+ "GET /broken/api/health/checks/is-in-service": {
+  "body": "{\"error\": \"Object Not Found\", \"reason\": \"Not Found\"}",
+  "status": 404
+ },
+ "GET /broken/api/health/checks/local-alarms": {
+  "body": "{\"status\": \"failed\", \"reason\": \"There are alarms in effect on the node\", \"alarms\": [{\"node\": \"rabbit@b\", \"resource\": \"disk\"}]}",
+  "status": 503
+ },
+ "GET /broken/api/health/checks/node-is-quorum-critical": {
+  "body": "{\"status\": \"failed\", \"reason\": \"There are quorum queues that would lose their quorum if the target node is shut down\", \"queues\": [{\"name\": \"payments\", \"virtual_host\": \"shop\"}]}",
+  "status": 503
+ },
+ "GET /broken/api/health/checks/ready-to-serve-clients": {
+  "body": "{\"error\": \"Object Not Found\", \"reason\": \"Not Found\"}",
+  "status": 404
+ },
+ "GET /broken/api/health/checks/virtual-hosts": {
+  "body": "{\"status\": \"ok\"}",
+  "status": 200
+ },
+ "GET /broken/api/nodes": {
+  "body": "[{\"name\": \"rabbit@a\", \"type\": \"disc\", \"running\": true, \"uptime\": 86400000, \"mem_used\": 900, \"mem_limit\": 1000, \"mem_alarm\": false, \"disk_free\": 10000000000, \"disk_free_limit\": 50000000, \"disk_free_alarm\": false, \"fd_used\": 10, \"fd_total\": 1024, \"partitions\": [\"rabbit@b\"], \"being_drained\": false, \"rabbitmq_version\": \"3.13.7\", \"enabled_plugins\": [\"rabbitmq_management\"]}, {\"name\": \"rabbit@b\", \"type\": \"disc\", \"running\": true, \"uptime\": 3600000, \"mem_used\": 1200, \"mem_limit\": 1000, \"mem_alarm\": true, \"disk_free\": 10000000, \"disk_free_limit\": 50000000, \"disk_free_alarm\": true, \"fd_used\": 1000, \"fd_total\": 1024, \"partitions\": [\"rabbit@a\"], \"being_drained\": true, \"rabbitmq_version\": \"3.13.7\", \"enabled_plugins\": [\"rabbitmq_management\"]}, {\"name\": \"rabbit@c\", \"running\": false, \"partitions\": []}]",
+  "status": 200
+ },
+ "GET /broken/api/overview": {
+  "body": "{\"error\": \"internal_error\", \"reason\": \"management database unavailable\"}",
+  "status": 500
+ },
+ "GET /broken/api/parameters": {
+  "body": "[{\"vhost\": \"/\", \"component\": \"shovel\", \"name\": \"multi\", \"value\": {\"src-uri\": [\"amqp://a:pw1@h1\", \"amqp://b:pw2@h2/%2f?heartbeat=10&password=pw3\"], \"dest-uri\": \"amqps://c:p%40ss@h3:5671\", \"dest-password\": \"pw4\", \"src-queue\": \"q\"}}]",
+  "status": 200
+ },
+ "GET /broken/api/queues?page=1&page_size=100": {
+  "body": "{\"error\": \"bad_request\", \"reason\": \"Page out of range\"}",
+  "status": 400
+ },
+ "GET /broken/api/users": {
+  "body": "[{\"name\": \"legacy\", \"password_hash\": \"c2VjcmV0aGFzaA==\", \"hashing_algorithm\": \"rabbit_password_hashing_sha256\", \"tags\": \"administrator,monitoring\", \"limits\": {}}, {\"name\": \"nopass\", \"password_hash\": \"\", \"tags\": \"\", \"limits\": {}}]",
+  "status": 200
+ }
+}

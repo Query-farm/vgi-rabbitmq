@@ -14,6 +14,9 @@ TOOLS           := $(CURDIR)/.tools
 HAYBARN_UNITTEST := $(TOOLS)/bin/haybarn-unittest
 GOLANGCI_LINT   := $(TOOLS)/bin/golangci-lint$(EXE)
 TRANSPORT       ?= stdio
+# test/sql/stream.test needs the live fixture broker (AMQP); without it, it is the one allowed skip.
+EXPECTED_SKIP_REASONS ?= require-env RABBITMQ_LIVE_URL
+export EXPECTED_SKIP_REASONS
 # Pure Go by default; set CGO_ENABLED=1 if you import vgi-go/vgi/exprduckdb.
 export CGO_ENABLED ?= 0
 

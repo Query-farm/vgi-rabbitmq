@@ -218,7 +218,7 @@ type healthArgs struct {
 func (a healthArgs) secret() string { return deref(a.SecretName) }
 
 var healthColumns = []arrow.Field{
-	column("check", str, "Check name: alarms, local_alarms, certificate_expiration, node_is_quorum_critical, virtual_hosts, is_in_service, below_node_connection_limit, ready_to_serve_clients.", false),
+	column("check_name", str, "Check name: alarms, local_alarms, certificate_expiration, node_is_quorum_critical, virtual_hosts, is_in_service, below_node_connection_limit, ready_to_serve_clients.", false),
 	column("ok", boolean, "true when the check passed (HTTP 200).", false),
 	column("status", str, "The check's status: 'ok' or 'failed'.", false),
 	column("reason", str, "Why the check failed (or a note when it passed, e.g. 'single node cluster'); NULL otherwise.", true),
@@ -227,7 +227,7 @@ var healthColumns = []arrow.Field{
 }
 
 var healthExamples = []vgi.CatalogExample{
-	{SQL: "SELECT check, status, reason FROM rabbitmq.main.health_checks() WHERE NOT ok ORDER BY check",
+	{SQL: "SELECT check_name, status, reason FROM rabbitmq.main.health_checks() WHERE NOT ok ORDER BY check_name",
 		Description: "Failing health checks and why"},
 	{SQL: "SELECT bool_and(ok) AS healthy, count(*) FILTER (WHERE NOT ok) AS failing FROM rabbitmq.main.health_checks(cert_within := 30, cert_unit := 'days')",
 		Description: "One healthy/unhealthy verdict, with certificates checked 30 days ahead"},
@@ -255,7 +255,7 @@ func newHealthChecks() vgi.TableFunction {
 			DocLLM: "Runs the management health-check endpoints and returns one row per check: alarms (cluster-wide resource alarms), " +
 				"local_alarms, certificate_expiration (listener certificates expiring within cert_within cert_unit), " +
 				"node_is_quorum_critical (stopping this node would lose quorum), virtual_hosts, is_in_service, " +
-				"below_node_connection_limit and ready_to_serve_clients. Columns: check, ok, status, reason, http_status, details JSON. " +
+				"below_node_connection_limit and ready_to_serve_clients. Columns: check_name, ok, status, reason, http_status, details JSON. " +
 				"A failed check (HTTP 503) is a row with ok=false, never an error. Checks a broker does not have (older versions) are omitted. " +
 				"Named args: cert_within (default 1), cert_unit (days|weeks|months|years, default months), secret_name.",
 			DocMD: "## health_checks(cert_within := 1, cert_unit := 'months')\n\nEvery health check as a row; failures are rows with `ok = false`."},

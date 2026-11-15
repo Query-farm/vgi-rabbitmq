@@ -7,6 +7,7 @@
 package rabbitmq
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -217,11 +218,13 @@ func vJSON(v any) any {
 	if v == nil {
 		return nil
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // keep '&' in URIs readable
+	if err := enc.Encode(v); err != nil {
 		return nil
 	}
-	return string(b)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // errInvalid is an argument error shown to the user as-is.

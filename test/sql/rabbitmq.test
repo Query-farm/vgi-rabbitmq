@@ -1,148 +1,395 @@
 # name: test/sql/rabbitmq.test
-# description: SQL-level tests for the rabbitmq worker, run through DuckDB by ci/run-integration.sh
+# description: SQL tests for the rabbitmq worker against recorded Management API responses (test/fixture_server)
 # group: [rabbitmq]
-# managed-by: vgi-starters (edit upstream in shared/, then run tools/render.py)
 
 require vgi
 
 require-env RABBITMQ_WORKER
 
-require-env RABBITMQ_MOCK_API
+require-env RABBITMQ_FIXTURE_URL
 
-require-env RABBITMQ_MOCK_API_AUTH
+require-env RABBITMQ_FIXTURE_AUTH_URL
 
 statement ok
 ATTACH 'rabbitmq' (TYPE vgi, LOCATION '{RABBITMQ_WORKER}');
 
-# ---------------------------------------------------------------- greet (scalar)
+statement ok
+LOAD json;
 
-query T
-SELECT rabbitmq.main.greet('Ada');
-----
-Hi, Ada!
+# ------------------------------------------------------------------ secrets
 
-query T
-SELECT rabbitmq.main.greet('Ada', 'formal');
-----
-Good day, Ada.
-
-# NULL in, NULL out.
-query T
-SELECT rabbitmq.main.greet(NULL);
-----
-NULL
-
-# Works over a whole column, one result per row.
-query T
-SELECT rabbitmq.main.greet(name) FROM (VALUES ('Ada'), ('Grace'), (NULL)) AS t(name) ORDER BY ALL NULLS LAST;
-----
-Hi, Ada!
-Hi, Grace!
-NULL
-
-# `style` is constrained to 'casual' | 'formal' and checked when the query is bound.
-# (No expected message: each SDK words constraint errors its own way.)
+# Without a secret every function says how to create one.
 statement error
-SELECT rabbitmq.main.greet('Ada', 'loud');
+SELECT * FROM rabbitmq.main.overview();
 ----
-<REGEX>:.*
+CREATE SECRET
 
-# ------------------------------------------------------ sequence_table (table fn)
+statement ok
+CREATE SECRET rmq (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_FIXTURE_URL}', USERNAME 'admin', PASSWORD 'admin-pass');
 
-query II
-SELECT n, squared FROM rabbitmq.main.sequence_table(4) ORDER BY n;
+# ------------------------------------------------------------------ broker
+
+query TTTII
+SELECT cluster_name, rabbitmq_version, node, queues, exchanges FROM rabbitmq.main.overview();
 ----
-0	0
-1	1
-2	4
-3	9
+vgi-fixture	4.4.0	rabbit@vgi-rabbit	6	17
 
-# Named argument with a default.
+query T
+SELECT array_to_string(list_sort(listeners), ',') FROM rabbitmq.main.overview();
+----
+amqp:5672@rabbit@vgi-rabbit,clustering:25672@rabbit@vgi-rabbit,http:15672@rabbit@vgi-rabbit,stream:5552@rabbit@vgi-rabbit
+
+query TTTTTIT
+SELECT name, type, running, mem_alarm, disk_free_alarm, len(partitions), list_contains(enabled_plugins, 'rabbitmq_shovel') FROM rabbitmq.main.nodes();
+----
+rabbit@vgi-rabbit	disc	true	false	false	0	true
+
+query TTTTT
+SELECT name, description, array_to_string(tags, ','), default_queue_type, cluster_state['rabbit@vgi-rabbit'] FROM rabbitmq.main.vhosts() ORDER BY name;
+----
+/	Default virtual host	(empty)	classic	running
+shop	Online shop	production	classic	running
+
+# ------------------------------------------------------------------ queues
+
+query TTTTTTI
+SELECT vhost, name, type, durable, policy, arguments['x-queue-type'], messages_ready FROM rabbitmq.main.queues() ORDER BY vhost, name;
+----
+shop	events	stream	true	NULL	stream	5
+shop	legacy.outbox	classic	true	NULL	classic	0
+shop	orders.archive	classic	true	orders-ttl	classic	3
+shop	orders.created	classic	true	orders-ttl	classic	3
+shop	orders.dlq	classic	true	orders-ttl	classic	1
+shop	payments	quorum	true	NULL	quorum	2
+
+# The held consumer keeps two messages unacknowledged on orders.archive.
+query IIII
+SELECT messages, messages_ready, messages_unacknowledged, consumers FROM rabbitmq.main.queues(vhost := 'shop', name := 'orders.archive');
+----
+5	3	2	1
+
+# Pagination: three pages of two, the cursor carried in the scan state.
 query I
-SELECT n FROM rabbitmq.main.sequence_table(3, step := 5) ORDER BY n;
+SELECT count(*) FROM rabbitmq.main.queues(page_size := 2);
+----
+6
+
+# The name filter is a case-insensitive substring; with use_regex a regex.
+query T
+SELECT name FROM rabbitmq.main.queues(vhost := 'shop', name := 'ORDERS') ORDER BY name;
+----
+orders.archive
+orders.created
+orders.dlq
+
+query T
+SELECT name FROM rabbitmq.main.queues(vhost := 'shop', name := '^orders\.c', use_regex := true);
+----
+orders.created
+
+# The default vhost '/' is sent as %2F.
+query I
+SELECT count(*) FROM rabbitmq.main.queues(vhost := '/');
 ----
 0
-5
-10
 
-# Larger than one batch: the cursor must carry across process calls.
-query II
-SELECT count(*), max(n) FROM rabbitmq.main.sequence_table(25000);
+query TTTT
+SELECT name, array_to_string(members, ','), delivery_limit, arguments['x-dead-letter-exchange'] FROM rabbitmq.main.queues(vhost := 'shop', name := 'payments');
 ----
-25000	24999
+payments	rabbit@vgi-rabbit	5	dlx
+
+query TT
+SELECT head_message_timestamp, effective_policy_definition['message-ttl'] FROM rabbitmq.main.queues(vhost := 'shop', name := 'orders.created');
+----
+2026-01-01 00:00:00+00	86400000
+
+query T
+SELECT first_timestamp IS NOT NULL FROM rabbitmq.main.queues(vhost := 'shop', name := 'events');
+----
+true
+
+statement error
+SELECT * FROM rabbitmq.main.queues(vhost := 'nosuch');
+----
+HTTP 404
+
+statement error
+SELECT * FROM rabbitmq.main.queues(page_size := 501);
+----
+<REGEX>:.*page_size.*
+
+# ------------------------------------------------------------------ exchanges and bindings
+
+query TTTT
+SELECT name, type, durable, internal FROM rabbitmq.main.exchanges(vhost := 'shop') WHERE name NOT LIKE 'amq.%' AND name <> '' ORDER BY name;
+----
+audit	headers	true	true
+dlx	fanout	true	false
+orders	topic	true	false
+
+query TTTT
+SELECT source, routing_key, destination_type, destination FROM rabbitmq.main.bindings(vhost := 'shop') WHERE source <> '' ORDER BY source, destination;
+----
+dlx	(empty)	queue	orders.dlq
+orders	orders.paid	exchange	audit
+orders	#	queue	events
+orders	orders.#	queue	orders.archive
+orders	orders.created.*	queue	orders.created
+orders	orders.paid	queue	payments
+
+query T
+SELECT arguments['x-match'] FROM rabbitmq.main.bindings(vhost := 'shop') WHERE destination = 'payments' AND source = 'orders';
+----
+all
+
+# ------------------------------------------------------------------ clients
+
+query TTTTT
+SELECT vhost, user, client_connection_name, protocol, ssl FROM rabbitmq.main.connections();
+----
+shop	admin	fixture-archiver	AMQP 0-9-1	false
 
 query I
-SELECT count(*) FROM rabbitmq.main.sequence_table(0);
+SELECT count(*) FROM rabbitmq.main.connections(vhost := 'shop');
+----
+1
+
+query TIIII
+SELECT vhost, consumer_count, prefetch_count, messages_unacknowledged, number FROM rabbitmq.main.channels();
+----
+shop	1	2	2	1
+
+query TTTTIT
+SELECT vhost, queue, consumer_tag, ack_required, prefetch_count, active FROM rabbitmq.main.consumers(vhost := 'shop');
+----
+shop	orders.archive	archiver-1	true	2	true
+
+# ------------------------------------------------------------------ access
+
+query TTTT
+SELECT name, array_to_string(tags, ','), has_password, limits['max-connections'] FROM rabbitmq.main.users() ORDER BY name;
+----
+admin	administrator	true	NULL
+monitor	monitoring	true	NULL
+orders-app	(empty)	true	50
+
+query TTTTT
+SELECT user, vhost, configure, write, read FROM rabbitmq.main.permissions(vhost := 'shop') ORDER BY user;
+----
+admin	shop	.*	.*	.*
+monitor	shop	^$	^$	.*
+orders-app	shop	^orders\..*	^orders.*	^orders\..*
+
+query I
+SELECT count(*) FROM rabbitmq.main.permissions();
+----
+4
+
+query TTTTT
+SELECT user, vhost, exchange, write, read FROM rabbitmq.main.topic_permissions();
+----
+orders-app	shop	orders	^orders\.	.*
+
+# ------------------------------------------------------------------ config
+
+query TTTTIT
+SELECT vhost, name, pattern, apply_to, priority, definition['message-ttl'] FROM rabbitmq.main.policies();
+----
+shop	orders-ttl	^orders\.	queues	1	86400000
+
+query I
+SELECT count(*) FROM rabbitmq.main.policies(vhost := '/');
 ----
 0
 
-# count is constrained to [0, 1000000].
+query I
+SELECT count(*) FROM rabbitmq.main.operator_policies();
+----
+0
+
+# Credentials in shovel and federation URIs are masked.
+query TTTT
+SELECT component, name, json_extract_string(value, '$."dest-uri"'), json_extract_string(value, '$.uri') FROM rabbitmq.main.parameters() ORDER BY component;
+----
+federation-upstream	dc2	NULL	amqps://fed_user:****@dc2.invalid:5671/shop?cacertfile=/etc/ca.pem
+shovel	orders-to-archive	amqp://shovel_user:****@archive.invalid:5672/archive	NULL
+
+query I
+SELECT count(*) FROM rabbitmq.main.parameters() WHERE value LIKE '%S3cr3t%';
+----
+0
+
+query TT
+SELECT vhost, name FROM rabbitmq.main.parameters(component := 'shovel', vhost := 'shop');
+----
+shop	orders-to-archive
+
 statement error
-SELECT * FROM rabbitmq.main.sequence_table(-1);
+SELECT * FROM rabbitmq.main.parameters(vhost := 'shop');
 ----
-<REGEX>:.*
+needs component
 
-# Named arguments are constrained too: step >= 1.
-statement error
-SELECT * FROM rabbitmq.main.sequence_table(3, step := 0);
+query T
+SELECT value FROM rabbitmq.main.global_parameters() WHERE name = 'cluster_name';
 ----
-<REGEX>:.*
+"vgi-fixture"
 
-# ------------------------------------------------- fetch_items (REST table fn)
-
-query IIT
-SELECT count(*), sum(id), min(name) FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API}', page_size := 4);
+query TTTTT
+SELECT vhost, name, type, state, reason FROM rabbitmq.main.shovels();
 ----
-25	325	item-01
+shop	orders-to-archive	dynamic	terminated	failed to connect to destination
 
 query TI
-SELECT category, count(*) FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API}') GROUP BY category ORDER BY category;
+SELECT object_type, object_count FROM rabbitmq.main.definitions_summary() ORDER BY object_type;
 ----
-hardware	8
-service	8
-software	9
+bindings	6
+exchanges	2
+global_parameters	2
+parameters	2
+permissions	4
+policies	1
+queues	6
+topic_permissions	1
+users	3
+vhosts	2
 
-# The harness runs RABBITMQ_MOCK_API with MOCK_API_FLAKY=1: every page answers
-# 429 + Retry-After once, so every query above also exercised the retry path.
+query TI
+SELECT object_type, object_count FROM rabbitmq.main.definitions_summary(vhost := 'shop') WHERE object_type IN ('queues', 'policies') ORDER BY object_type;
+----
+policies	1
+queues	6
 
-# RABBITMQ_MOCK_API_AUTH requires a bearer token ('test-token'). Every language's
-# fetch_items must put the HTTP status code in its error message.
+# ------------------------------------------------------------------ health
+
+query TTTT
+SELECT check_name, ok, status, reason FROM rabbitmq.main.health_checks() ORDER BY check_name;
+----
+alarms	true	ok	NULL
+below_node_connection_limit	true	ok	NULL
+certificate_expiration	true	ok	NULL
+is_in_service	true	ok	NULL
+local_alarms	true	ok	NULL
+node_is_quorum_critical	true	ok	single node cluster
+ready_to_serve_clients	true	ok	NULL
+virtual_hosts	true	ok	NULL
+
+query T
+SELECT count(*) > 10 FROM rabbitmq.main.feature_flags() WHERE state = 'enabled';
+----
+true
+
+query TT
+SELECT deprecation_phase, in_use FROM rabbitmq.main.deprecated_features() WHERE name = 'transient_nonexcl_queues';
+----
+denied_by_default	false
+
+# ------------------------------------------------------------------ messages (peek, opt-in)
+
 statement error
-SELECT count(*) FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API_AUTH}');
+SELECT * FROM rabbitmq.main.peek_messages('shop', 'orders.created');
 ----
-401
+peek_requeue := true
+
+query TTTTTTTI
+SELECT message_id, key, exchange, payload_text, headers['trace'], timestamp, content_type, delivery_mode FROM rabbitmq.main.peek_messages('shop', 'orders.created', peek_requeue := true);
+----
+msg-1	orders.created.eu	orders	{"order_id": 1001, "region": "eu", "total": 42.5}	t-001	2026-01-01 00:00:00+00	application/json	2
+msg-2	orders.created.us	orders	{"order_id": 1002, "region": "us", "total": 19.99}	t-002	2026-01-01 00:01:00+00	application/json	2
+msg-3	orders.created.eu	orders	{"order_id": 1003, "region": "eu", "total": 7.25}	t-003	2026-01-01 00:02:00+00	application/json	2
+
+query TTTTI
+SELECT message_id, payload, payload_text IS NULL, sequence IS NULL, payload_bytes FROM rabbitmq.main.peek_messages('shop', 'orders.dlq', count := 5, peek_requeue := true);
+----
+bin-1	\x00\xFF\xFE\x01	true	true	4
+
+query TT
+SELECT payload_text::JSON->>'method', headers['attempt'] FROM rabbitmq.main.peek_messages('shop', 'payments', count := 1, peek_requeue := true);
+----
+card	2
+
+# ------------------------------------------------------------------ an unhealthy, older broker (handwritten fixtures under /broken)
 
 statement ok
-CREATE SECRET rabbitmq_api_test (TYPE rabbitmq_api, TOKEN 'test-token');
+CREATE SECRET broken (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_FIXTURE_URL}/broken', USERNAME 'admin', PASSWORD 'admin-pass', SCOPE 'rabbitmq://broken');
 
-query I
-SELECT count(*) FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API_AUTH}', page_size := 25);
+# Failed checks are rows, missing endpoints are omitted.
+query TTTT
+SELECT check_name, ok, http_status, reason FROM rabbitmq.main.health_checks(cert_within := 30, cert_unit := 'days', secret_name := 'broken') ORDER BY check_name;
 ----
-25
+alarms	false	503	There are alarms in effect in the cluster
+certificate_expiration	false	503	Certificates expiring
+local_alarms	false	503	There are alarms in effect on the node
+node_is_quorum_critical	false	503	There are quorum queues that would lose their quorum if the target node is shut down
+virtual_hosts	true	200	NULL
 
-# Several pages: the token must survive between batches (over HTTP each batch is a
-# separate request, so a token kept only in memory is lost after page 1).
-query I
-SELECT count(*) FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API_AUTH}', page_size := 7);
+query T
+SELECT json_extract_string(details, '$.alarms[0].resource') FROM rabbitmq.main.health_checks(secret_name := 'broken') WHERE check_name = 'alarms';
 ----
-25
+memory
+
+query TTTTTTT
+SELECT name, running, mem_alarm, disk_free_alarm, array_to_string(partitions, ','), being_drained, mem_used > mem_limit FROM rabbitmq.main.nodes(secret_name := 'broken') ORDER BY name;
+----
+rabbit@a	true	false	false	rabbit@b	false	false
+rabbit@b	true	true	true	rabbit@a	true	true
+rabbit@c	false	NULL	NULL	(empty)	NULL	NULL
+
+statement error
+SELECT * FROM rabbitmq.main.overview(secret_name := 'broken');
+----
+HTTP 500
+
+# 3.x returned password hashes in /api/users: they never reach SQL.
+query TTT
+SELECT name, array_to_string(tags, ','), has_password FROM rabbitmq.main.users(secret_name := 'broken') ORDER BY name;
+----
+legacy	administrator,monitoring	true
+nopass	(empty)	false
+
+query T
+SELECT value FROM rabbitmq.main.parameters(secret_name := 'broken');
+----
+{"dest-password":"****","dest-uri":"amqps://c:****@h3:5671","src-queue":"q","src-uri":["amqp://a:****@h1","amqp://b:****@h2/%2f?heartbeat=10&password=****"]}
+
+# An empty listing ("page out of range") is zero rows.
+query I
+SELECT count(*) FROM rabbitmq.main.queues(secret_name := 'broken');
+----
+0
+
+statement error
+SELECT * FROM rabbitmq.main.users(secret_name := 'nosuch');
+----
+<REGEX>:.*nosuch.*
+
+# ------------------------------------------------------------------ authentication
 
 statement ok
-DROP SECRET rabbitmq_api_test;
-
-# base_url must be http(s).
-statement error
-SELECT * FROM rabbitmq.main.fetch_items('ftp://example.com');
-----
-<REGEX>:.*
-
-# page_size is a named argument constrained to [1, 1000].
-statement error
-SELECT * FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API}', page_size := 0);
-----
-<REGEX>:.*
+CREATE SECRET auth_bad (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_FIXTURE_AUTH_URL}', USERNAME 'monitor', PASSWORD 'wrong', SCOPE 'rabbitmq://auth_bad');
 
 statement error
-SELECT * FROM rabbitmq.main.fetch_items('{RABBITMQ_MOCK_API}', page_size := 5000);
+SELECT * FROM rabbitmq.main.vhosts(secret_name := 'auth_bad');
 ----
-<REGEX>:.*
+HTTP 401
+
+statement ok
+CREATE SECRET auth_basic (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_FIXTURE_AUTH_URL}', USERNAME 'monitor', PASSWORD 'monitor-pass', SCOPE 'rabbitmq://auth_basic');
+
+query I
+SELECT count(*) FROM rabbitmq.main.vhosts(secret_name := 'auth_basic');
+----
+2
+
+statement ok
+CREATE SECRET auth_oauth (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_FIXTURE_AUTH_URL}/', BEARER_TOKEN 'test-token', SCOPE 'rabbitmq://auth_oauth');
+
+query I
+SELECT count(*) FROM rabbitmq.main.vhosts(secret_name := 'auth_oauth');
+----
+2
+
+# stream_messages needs AMQP_URL.
+statement error
+SELECT * FROM rabbitmq.main.stream_messages('shop', 'events');
+----
+AMQP_URL

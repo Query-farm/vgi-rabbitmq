@@ -28,8 +28,11 @@ docker run -d --name "$NAME" --hostname vgi-rabbit -m 512m \
   -v "$HERE/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro" \
   "$IMAGE" >/dev/null
 for _ in $(seq 1 90); do
+  # Seed only once the stream is running and bound, or its copies are lost.
   if curl -fsS -u admin:admin-pass "http://127.0.0.1:$HTTP_PORT/api/health/checks/virtual-hosts" >/dev/null 2>&1 \
-     && curl -fsS -u admin:admin-pass "http://127.0.0.1:$HTTP_PORT/api/queues/shop/events" 2>/dev/null | grep -q '"leader"\|"members"'; then
+     && curl -fsS -u admin:admin-pass "http://127.0.0.1:$HTTP_PORT/api/queues/shop/events" 2>/dev/null | grep -q '"state":"running"' \
+     && curl -fsS -u admin:admin-pass "http://127.0.0.1:$HTTP_PORT/api/bindings/shop/e/orders/q/events" 2>/dev/null | grep -q '"routing_key"'; then
+    sleep 3
     python3 "$HERE/seed.py" "http://127.0.0.1:$HTTP_PORT" >&2
     sleep 6   # let the management stats catch up with the published messages
     echo "http://127.0.0.1:$HTTP_PORT"

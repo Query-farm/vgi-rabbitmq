@@ -1,0 +1,105 @@
+# name: test/sql/stream.test
+# description: stream_messages over AMQP against the live fixture broker (test/fixture/run-rabbitmq.sh); skipped without it
+# group: [rabbitmq]
+
+require vgi
+
+require-env RABBITMQ_WORKER
+
+require-env RABBITMQ_LIVE_URL
+
+require-env RABBITMQ_AMQP_URL
+
+require-env RABBITMQ_AMQP_NOAUTH_URL
+
+statement ok
+ATTACH 'rabbitmq' (TYPE vgi, LOCATION '{RABBITMQ_WORKER}');
+
+statement ok
+LOAD json;
+
+statement ok
+CREATE SECRET live (TYPE rabbitmq, MANAGEMENT_URL '{RABBITMQ_LIVE_URL}', USERNAME 'admin', PASSWORD 'admin-pass', AMQP_URL '{RABBITMQ_AMQP_URL}');
+
+query ITTTTTT
+SELECT sequence, key, exchange, payload_text::JSON->>'order_id', headers['trace'], timestamp, message_id FROM rabbitmq.main.stream_messages('shop', 'events') ORDER BY sequence;
+----
+0	orders.created.eu	orders	1001	t-001	2026-01-01 00:00:00+00	msg-1
+1	orders.created.us	orders	1002	t-002	2026-01-01 00:01:00+00	msg-2
+2	orders.created.eu	orders	1003	t-003	2026-01-01 00:02:00+00	msg-3
+3	orders.paid	orders	1001	t-004	2026-01-01 00:03:00+00	msg-4
+4	orders.paid	orders	1002	t-005	2026-01-01 00:04:00+00	msg-5
+
+# Reading never consumes: a second read sees the same messages.
+query II
+SELECT count(*), sum(sequence) FROM rabbitmq.main.stream_messages('shop', 'events');
+----
+5	10
+
+# A numeric start offset skips the chunk's earlier messages; batch_size 1
+# makes every message its own batch, resuming from the externalized offset.
+query I
+SELECT sequence FROM rabbitmq.main.stream_messages('shop', 'events', start_offset := '3', batch_size := 1) ORDER BY sequence;
+----
+3
+4
+
+query I
+SELECT count(*) FROM rabbitmq.main.stream_messages('shop', 'events', max_messages := 2);
+----
+2
+
+# 'next' only waits for new messages: none arrive, so the scan ends empty.
+query I
+SELECT count(*) FROM rabbitmq.main.stream_messages('shop', 'events', start_offset := 'next', idle_timeout_ms := 300);
+----
+0
+
+query I
+SELECT count(*) FROM rabbitmq.main.stream_messages('shop', 'events', start_timestamp := TIMESTAMPTZ '2020-01-01 00:00:00+00');
+----
+5
+
+query TI
+SELECT key, count(*) FROM rabbitmq.main.stream_messages('shop', 'events') GROUP BY key ORDER BY key;
+----
+orders.created.eu	2
+orders.created.us	1
+orders.paid	2
+
+statement error
+SELECT * FROM rabbitmq.main.stream_messages('shop', 'events', start_offset := 'middle');
+----
+<REGEX>:.*start_offset.*
+
+# A classic or quorum queue is refused before subscribing.
+statement error
+SELECT * FROM rabbitmq.main.stream_messages('shop', 'orders.created');
+----
+not a stream
+
+# Without a management URL the broker itself refuses x-stream-offset on a
+# classic or quorum queue, and the worker never acknowledges a delivery that
+# carries no stream offset, so nothing is consumed ...
+statement ok
+CREATE SECRET amqp_only (TYPE rabbitmq, AMQP_URL '{RABBITMQ_AMQP_URL}', SCOPE 'rabbitmq://amqp_only');
+
+statement error
+SELECT * FROM rabbitmq.main.stream_messages('shop', 'orders.dlq', secret_name := 'amqp_only');
+----
+<REGEX>:.*(not a stream|x-stream-offset).*
+
+# ... so the queue still holds its message.
+query I
+SELECT messages FROM rabbitmq.main.queues(vhost := 'shop', name := 'orders.dlq');
+----
+1
+
+# AMQP credentials from USERNAME/PASSWORD when the URL has none.
+statement ok
+CREATE SECRET amqp_creds (TYPE rabbitmq, AMQP_URL '{RABBITMQ_AMQP_NOAUTH_URL}', USERNAME 'admin', PASSWORD 'admin-pass', SCOPE 'rabbitmq://amqp_creds');
+
+query I
+SELECT count(*) FROM rabbitmq.main.stream_messages('shop', 'events', secret_name := 'amqp_creds');
+----
+5

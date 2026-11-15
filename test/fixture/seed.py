@@ -11,6 +11,7 @@ and the `events` stream; orders.paid also reaches the `payments` quorum queue.
 import base64
 import json
 import sys
+import time
 import urllib.request
 
 BASE = sys.argv[1].rstrip("/")
@@ -53,4 +54,11 @@ for i, (key, body) in enumerate(ORDERS):
 # A binary (non-UTF-8) payload straight to a queue through the default exchange.
 publish(None, "orders.dlq", base64.b64encode(bytes([0, 255, 254, 1])).decode(),
         {"content_type": "application/octet-stream", "message_id": "bin-1", "timestamp": T0 + 600}, "base64")
+# The stream must hold every order: fail loudly rather than record a wrong fixture.
+for _ in range(30):
+    if call("GET", "/api/queues/shop/events").get("messages") == len(ORDERS):
+        break
+    time.sleep(1)
+else:
+    sys.exit("the events stream did not receive the seeded messages")
 print("seeded", len(ORDERS) + 1, "messages")
