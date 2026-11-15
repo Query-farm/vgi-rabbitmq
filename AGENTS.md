@@ -24,15 +24,23 @@ Faster loops while iterating: `make test-unit`, `make test-sql`, `make lint-expl
 cmd/vgi-rabbitmq-worker/  # main.go: the worker binary (flags -> serve.Main)
 internal/rabbitmq/
   worker.go        # assembles the catalog; register new functions in NewWorker
-  meta.go          # catalog/schema metadata + helpers (objectTags, column)
-  greet.go         # scalar example (overloads, constant arg with choices)
-  sequence.go      # table function example (named args, streaming state)
-  fetch_items.go   # REST API table function (pagination, retries, secrets)
+  meta.go          # catalog/schema metadata, categories, agent tasks + helpers
+  client.go        # secret -> connection (basic/OAuth/TLS), HTTP with retries, pagination
+  table.go         # shared table-function shape: args -> one page of rows, cursor in ListState
+  values.go        # JSON value helpers and the generic Arrow builder
+  mask.go          # credential masking for parameters / shovels / mask_uri
+  broker.go        # overview, nodes, vhosts, health_checks, feature_flags, deprecated_features, definitions_summary
+  topology.go      # queues, exchanges, bindings, policies, parameters, global_parameters, shovels
+  clients.go       # connections, channels, consumers
+  access.go        # users (never password hashes), permissions, topic_permissions
+  messages.go      # stream_messages (AMQP, non-destructive) and peek_messages (opt-in re-queue)
+  tools.go         # offline scalars: topic_matches, mask_uri (carry the executable examples)
   version.go       # the worker version (checked against release tags)
   *_test.go        # go test unit tests
 internal/serve/    # --http / --unix / stdio and logging flags, shared with recipes
-test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
+test/sql/          # rabbitmq.test (replay fixtures) and stream.test (live broker only)
+test/fixture_server/  # replay server: recorded.json (live broker) + handwritten.json (/broken prefix)
+test/fixture/      # live rabbitmq:4-management fixture: definitions, seed, held consumer
 examples/          # recipes (one package main, served by bin/recipes <name>)
 ci/                # integration harness used by `make test-sql` and CI
 scripts/           # vgi_template.py (init / template-diff)
@@ -41,8 +49,9 @@ vgi-agent-tests.yaml  # private graders for the agent test tasks
 
 ## Recipe: add a function
 
-1. Create `internal/rabbitmq/<name>.go`. Copy the closest example: `greet.go` for a
-   scalar, `sequence.go` for a generator, `fetch_items.go` for an API.
+1. Add it to the closest file: `tools.go` for an offline scalar, `topology.go` /
+   `clients.go` for a Management API listing (a `listFunc` with a `fetch`), `messages.go`
+   for message reads.
 2. Declare arguments as a struct with `vgi:"..."` tags. Use `pos=N` for positional
    arguments and `default=V` (no `pos`) for named ones; add `ge=`, `le=`, `pattern=` or
    `choices='a,b'` constraints. Scalar column arguments are `*array.String` (etc.) fields
@@ -140,14 +149,21 @@ v0.42.x speaks the same protocol). See
 - **State must be serializable.** Table-function state (the `S` in `TypedTableFunc[S]`) is gob-encoded into the HTTP continuation token between batches, because each batch can be served by a different request or process. Keep the cursor in *exported* fields (gob silently drops unexported ones, so the scan would restart from row 0), keep it small, and never put secrets in it.
 - **Examples must be deterministic.** Add `ORDER BY`, and no `now()`, random values or
   network. Examples that hit a live API go in `examples`, not `executable_examples`.
-- **Credentials.** Read them from a DuckDB secret first (`CREATE SECRET (TYPE rabbitmq_api, …)`),
-  then from an environment variable. Never put them in logs, examples or the repo, and
+- **Credentials.** Read them from the `rabbitmq` DuckDB secret
+  (`CREATE SECRET (TYPE rabbitmq, MANAGEMENT_URL …)`), never from environment variables. Mask
+  anything that can carry a URI (`maskValue`). Never put them in logs, examples or the repo, and
   keep them out of table-function state unless the state rule above says
   the SDK encrypts it. Workers that need real credentials set `execute: false` on the metadata check.
 - **Errors.** Raise errors with a clear message. For HTTP failures, include the status
   code. DuckDB shows the message to the user.
 - **Rate limits.** Retry 429 and 5xx with backoff, honour `Retry-After`, and set timeouts on
-  every request.
+  every request. Health-check endpoints answer a failed check with 503: pass
+  `reqOpts{healthCheck: true}` so it is returned, not retried.
+- **Read-only.** Management functions only GET. Never add a function that changes broker
+  state. `peek_messages` is the single, opt-in exception (it re-queues); never consume or
+  ack a non-stream queue (`stream_messages` refuses them three ways).
+- **Reserved column names.** `offset`, `check`, `order` and friends break unquoted SQL:
+  the stream position is `sequence`, the health-check name `check_name`.
 - **Version pins.** Don't bump the vgi-go minor version by hand. A minor release can
   change the wire protocol, which must match the DuckDB extension exactly. Template
   updates (`make template-diff`) carry tested bumps.
@@ -187,8 +203,7 @@ v0.42.x speaks the same protocol). See
 
 ## Useful prompts
 
-- "Add a scalar `slugify(text VARCHAR) -> VARCHAR` with full metadata and tests."
-- "Replace `fetch_items` with a table function for <API>. Map its JSON to typed columns,
-  read the token from a `rabbitmq_api` secret, and add mock-server tests."
-- "Add a catalog table `countries` (code, name) with a primary key, following
-  `examples/catalog_tables`."
+- "Add `federation_links()` for /api/federation-links with masked URIs, a handwritten
+  fixture under /broken and SQL tests."
+- "Add `stream_consumers()` for /api/stream/consumers (offset and offset_lag), enable
+  rabbitmq_stream_management in test/fixture, and re-record."

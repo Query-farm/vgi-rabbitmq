@@ -1,300 +1,328 @@
-<!-- managed-by: vgi-starters (edit upstream in shared/README.md.tmpl, then run tools/render.py) -->
 <p align="center">
   <img src="https://query.farm/media-kit/products/vgi/vgi-logo.png" alt="Vector Gateway Interface (VGI)" width="320">
 </p>
 
-<p align="center"><em>A Query.Farm VGI worker for DuckDB, written in Go.</em></p>
+# Query RabbitMQ Queues, Topology and Streams With SQL in DuckDB
 
-# VGI Rabbitmq Worker — Go
+> **vgi-rabbitmq** · a [Query.Farm](https://query.farm) VGI worker
 
 [![CI](https://github.com/Query-farm/vgi-rabbitmq/actions/workflows/ci.yml/badge.svg)](https://github.com/Query-farm/vgi-rabbitmq/actions/workflows/ci.yml)
 [![vgi worker: query.farm](https://query.farm/media-kit/shields/vgi-worker.svg)](https://query.farm)
 
-[VGI](https://query.farm/vgi) lets DuckDB call functions that live in a separate
-process: your code, in any language, exposed as ordinary SQL. This worker adds
-three example functions that you rename and replace with your own:
+The RabbitMQ management UI shows one broker one page at a time. This worker turns the
+**RabbitMQ Management HTTP API** into SQL tables in DuckDB: queue depth and consumers,
+the exchange-to-queue routing graph, connections, channels, users and permissions,
+policies, shovels and federation upstreams (credentials masked), node alarms and health
+checks. Join them with each other and with anything else DuckDB reads, and read the
+messages in a **stream without consuming them**.
 
-| Function | Kind | Shows you how to |
-|---|---|---|
-| `greet(name)` / `greet(name, style)` | scalar | vectorize over a column, overload, constrain a constant |
-| `sequence_table(count, step := 1)` | table | stream rows in batches, take named arguments |
-| `fetch_items(base_url, page_size := 100)` | table | page through a REST API, retry, read a secret |
-
+It is **read-only**. Every management function is a `GET`. The one function that touches
+messages in a classic or quorum queue, `peek_messages`, re-queues what it fetches and
+refuses to run unless you pass `peek_requeue := true` (see [Reading messages](#reading-messages)).
 
 ## Quick start
 
-**Prerequisites:** Go 1.26+ and [uv](https://docs.astral.sh/uv/) (it runs the SQL
-test runner and the metadata checker).
-
-```bash
-make build
-```
-
-Then open DuckDB 2.0 or [Haybarn](https://query.farm/products/haybarn) and attach the
-worker. `LOCATION` is the command DuckDB runs to start it; use an absolute path,
-because a relative one resolves against DuckDB's working directory.
-
-**DuckDB 2.0:**
-
 ```sql
-SET allow_extension_repositories = 'allowed';
-CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm';
-INSTALL vgi FROM query_farm;
-LOAD vgi FROM query_farm;
-ATTACH 'rabbitmq' (TYPE vgi, LOCATION '/abs/path/to/vgi-rabbitmq/bin/vgi-rabbitmq-worker');
-```
-
-**Haybarn 2.0** (`uvx haybarn-cli`):
-
-```sql
-INSTALL vgi FROM community;
+INSTALL vgi FROM community;     -- Haybarn 2.0; on DuckDB 2.0 use the query_farm repository
 LOAD vgi;
-ATTACH 'rabbitmq' (TYPE vgi, LOCATION '/abs/path/to/vgi-rabbitmq/bin/vgi-rabbitmq-worker');
+ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'github-auto://Query-farm/vgi-rabbitmq@v0.1.0');
+
+CREATE SECRET (TYPE rabbitmq, MANAGEMENT_URL 'http://localhost:15672',
+               USERNAME 'monitor', PASSWORD '...',
+               AMQP_URL 'amqp://monitor:...@localhost:5672/');
+
+-- Queues with a backlog and nobody consuming them.
+SELECT vhost, name, type, messages_ready, messages_unacknowledged
+FROM rabbitmq.main.queues()
+WHERE consumers = 0 AND messages_ready > 0
+ORDER BY messages_ready DESC;
 ```
 
-Now call the functions:
+The secret type is registered by the worker, so run `CREATE SECRET` after `ATTACH`.
 
-```sql
-SELECT rabbitmq.main.greet('Ada');                         -- Hi, Ada!
-SELECT rabbitmq.main.greet('Ada', 'formal');               -- Good day, Ada.
-SELECT * FROM rabbitmq.main.sequence_table(5, step := 2) ORDER BY n;
-```
+<details><summary>Other ways to run it</summary>
 
-`fetch_items` pages through a REST API. Try it against the public demo API (25 fixed items):
+- **DuckDB 2.0**:
+  `SET allow_extension_repositories = 'allowed'; CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm'; INSTALL vgi FROM query_farm; LOAD vgi FROM query_farm;`
+  then attach as above.
+- **Docker** (HTTP): `docker run -p 8000:8000 ghcr.io/query-farm/vgi-rabbitmq:0.1.0`, then
+  `ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'http://localhost:8000')`.
+- **Go**: `go install github.com/Query-farm/vgi-rabbitmq/cmd/vgi-rabbitmq-worker@v0.1.0`,
+  then attach the binary by absolute path.
+- **From source**: `make build` (Go 1.26+, pure Go, no cgo), then
+  `ATTACH 'rabbitmq' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-rabbitmq-worker')`.
 
-```sql
-SELECT category, count(*) AS items, round(avg(price), 2) AS avg_price
-FROM rabbitmq.main.fetch_items('https://vgi-starter-api.query-farm.services/v1')
-GROUP BY category ORDER BY category;
-```
-
-If an older cached extension misbehaves, refresh it with `FORCE INSTALL vgi FROM query_farm;`
-(DuckDB) or `FORCE INSTALL vgi FROM community;` (Haybarn).
-
-## Using it in a pipeline
-
-Worker functions compose with everything else in DuckDB:
-
-```sql
--- Materialize an API into a local table.
-CREATE TABLE items AS SELECT * FROM rabbitmq.main.fetch_items('https://vgi-starter-api.query-farm.services/v1');
-
--- Join it with local files.
-SELECT i.name, i.price, s.units
-FROM items i JOIN 'sales.parquet' s ON s.item_id = i.id;
-
--- Call a scalar per row of another table.
-SELECT customer, rabbitmq.main.greet(customer, 'formal') FROM read_csv('customers.csv');
-```
-
-## Project layout
-
-```
-cmd/vgi-rabbitmq-worker/  # main.go: the worker binary (flags -> serve.Main)
-internal/rabbitmq/
-  worker.go        # assembles the catalog; register new functions in NewWorker
-  meta.go          # catalog/schema metadata + helpers (objectTags, column)
-  greet.go         # scalar example (overloads, constant arg with choices)
-  sequence.go      # table function example (named args, streaming state)
-  fetch_items.go   # REST API table function (pagination, retries, secrets)
-  version.go       # the worker version (checked against release tags)
-  *_test.go        # go test unit tests
-internal/serve/    # --http / --unix / stdio and logging flags, shared with recipes
-test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
-examples/          # recipes (one package main, served by bin/recipes <name>)
-ci/                # integration harness used by `make test-sql` and CI
-scripts/           # vgi_template.py (init / template-diff)
-vgi-agent-tests.yaml  # private graders for the agent test tasks
-```
-
-## Adding a function
-
-1. Create `internal/rabbitmq/<name>.go`. Copy the closest example: `greet.go` for a
-   scalar, `sequence.go` for a generator, `fetch_items.go` for an API.
-2. Declare arguments as a struct with `vgi:"..."` tags. Use `pos=N` for positional
-   arguments and `default=V` (no `pos`) for named ones; add `ge=`, `le=`, `pattern=` or
-   `choices='a,b'` constraints. Scalar column arguments are `*array.String` (etc.) fields
-   with `const=false`. `doc=` must be the last key in the tag.
-3. Implement `Name()`, `Metadata()` (with `Description`, `Tags: withExamples(objectTags(...), examples)`
-   and `Examples`), then `OnBindTyped`/`ProcessTyped` (scalar, wrap with
-   `vgi.AsScalarFunction[Args]`) or `ArgumentSpecs`/`OnBind`/`NewState`/`Process` (table,
-   wrap with `vgi.AsTableFunction[State]`).
-4. Register it in `NewWorker` in `internal/rabbitmq/worker.go`, and add its examples to
-   `allExamples`.
-
-**Which kind of function?**
-
-| You want to… | Use |
-|---|---|
-| compute one value per input row | a **scalar** function |
-| return a set of rows from arguments (an API, a file, a generator) | a **table** function |
-| transform or aggregate the rows of a query | a **table in-out** function or an **aggregate** |
-| expose a fixed dataset by name (`SELECT * FROM rabbitmq.main.t`) | a **catalog table** |
-| write data out to a file or service | `COPY … TO` with a copy function |
-| accept `INSERT` / `UPDATE` / `DELETE` | a catalog table with insert/update/delete functions |
-
-The [examples/](examples/) folder has a recipe for most of these. Writable tables have no
-recipe:
-
-A writable table is a `vgi.CatalogTable` that names a table in-out function per operation in
-`InsertFunction`, `UpdateFunction` and `DeleteFunction`, with the richest result each one
-produces in `WriteResultModes`. A write function declares `vgi.WriteOptionsArgSpec()`, reads
-the requested mode with `vgi.ParseWriteOptions`, and binds and emits
-`vgi.WriteResultSchema` / `vgi.WriteResultBatch`. UPDATE and DELETE need a `vgi.RowIDField`
-column emitted by a scan that declares projection pushdown. Transactions:
-`vgi.WithSupportsTransactions` (or `AttachDecision.SupportsTransactions` per ATTACH) and
-`vgi.WithTransactionHooks`. Since VGI protocol 3.3 a table's scan and write functions are
-table-only: hidden from `duckdb_functions()` and not callable from SQL. Set `ExposeScan: true`
-on the table to keep the scan callable as an ordinary table function too (write functions never
-are). The write helpers and transaction hooks need vgi-go v0.42.0 or newer: if `go.mod` has an
-older v0.42.x, run `go get github.com/Query-farm/vgi-go@v0.42` (the newest v0.42.x; every
-v0.42.x speaks the same protocol). See
-[Writable catalog tables](https://github.com/Query-farm/vgi-go#writable-catalog-tables) and
-[`examples/writable_tx`](https://github.com/Query-farm/vgi-go/tree/main/examples/writable_tx).
+v0.1.0 is not published yet. Until it is, build from source.
+</details>
 
 ## Secrets and configuration
 
-`fetch_items` shows the recommended pattern. A bearer token comes from a DuckDB secret
-when one exists, and from an environment variable otherwise:
+Every function that talks to the broker reads a DuckDB secret of type `rabbitmq`:
+
+| Field | Meaning |
+|---|---|
+| `MANAGEMENT_URL` | Management plugin root: `http://rabbit:15672`, or `https://ops.example.com/rabbitmq` behind a path prefix. `/api/...` is appended. |
+| `USERNAME` / `PASSWORD` | Basic auth. A `monitoring` user can read most listings; `users`, `permissions`, `topic_permissions` and `definitions_summary` need `administrator`. Password redacted. |
+| `BEARER_TOKEN` | OAuth 2 access token (rabbitmq_auth_backend_oauth2), sent as `Authorization: Bearer …`; for AMQP it is sent as the password. Redacted. |
+| `AMQP_URL` | AMQP 0-9-1 URL for `stream_messages`, e.g. `amqp://user:pass@rabbit:5672/` or `amqps://…`. The vhost argument overrides its path; without user info, `USERNAME`/`PASSWORD` (or the token) are used. Redacted. |
+| `TLS_CA_CERT` | PEM CA bundle for HTTPS and AMQPS. |
+| `TLS_CLIENT_CERT` / `TLS_CLIENT_KEY` | PEM client certificate and key for mutual TLS (key redacted). |
+| `TLS_SERVER_NAME` | Name to verify instead of the URL host. |
+| `TLS_SKIP_VERIFY` | `'true'` disables certificate verification (testing only). |
 
 ```sql
-CREATE SECRET (TYPE rabbitmq_api, TOKEN 'your-token');      -- per session, never logged
+-- Two brokers; pick one per call with secret_name.
+CREATE SECRET prod (TYPE rabbitmq, MANAGEMENT_URL 'https://rabbit-prod:15671', BEARER_TOKEN '...',
+                    TLS_CA_CERT '-----BEGIN CERTIFICATE-----...');
+CREATE SECRET staging (TYPE rabbitmq, MANAGEMENT_URL 'http://rabbit-staging:15672', USERNAME 'monitor', PASSWORD '...');
+
+SELECT * FROM rabbitmq.main.overview(secret_name := 'staging');
 ```
 
-```bash
-RABBITMQ_API_TOKEN=your-token make run-http                # for servers and containers
-```
+Credentials never enter table-function state or logs. Requests that get **429, 502, 503 or
+504** are retried with exponential backoff (5 attempts), honouring `Retry-After`. A health
+check's own `503 {"status":"failed"}` is an answer, not an outage: it becomes a row with
+`ok = false`. Other errors carry the HTTP status and the broker's `error`/`reason`.
 
-Try it: the demo API's `/v1/auth` endpoint needs the published token `demo-token`.
+## What's inside
+
+All objects are in `rabbitmq.main`. Each table function takes `secret_name := '...'`.
+
+| Function | What it returns |
+|---|---|
+| `overview()` | One row: cluster name, versions, message totals, rates, object counts, listeners. |
+| `nodes()` | Per node: memory / disk usage and **alarms**, file descriptors, sockets, processes, **partitions**, maintenance mode, plugins. |
+| `vhosts()` | Name, description, tags, default queue type, per-node state, message totals. |
+| `queues(vhost, name, use_regex, page_size)` | Type (classic/quorum/stream), state, node/members, policy, operator policy, effective policy, arguments, `messages_ready` / `messages_unacknowledged`, bytes, consumers, consumer capacity, rates, head-message and stream first timestamps, idle_since, delivery_limit. |
+| `exchanges(vhost, name, use_regex, page_size)` | Type, flags, arguments, policy, publish in/out counts and rates. |
+| `bindings(vhost)` | The routing graph: source exchange → destination queue/exchange, routing key, arguments. |
+| `connections(vhost, name, use_regex, page_size)` | User, state (blocked by an alarm?), protocol, TLS, peer, client name/product/version, heartbeat, traffic. |
+| `channels(vhost, name, use_regex, page_size)` | Prefetch, consumers, unacknowledged / unconfirmed / uncommitted messages, confirm/tx mode, rates. |
+| `consumers(vhost)` | Queue, consumer tag, channel, ack mode, prefetch, exclusive, active (single active consumer), arguments. |
+| `users()` | Name, tags, has_password, hashing algorithm, limits. **Password hashes are never returned.** |
+| `permissions(vhost)` / `topic_permissions(vhost)` | Configure/write/read regexes; routing-key regexes per topic exchange. |
+| `policies(vhost)` / `operator_policies(vhost)` | Pattern, apply-to, priority, definition. |
+| `parameters(component, vhost)` | Runtime parameters (shovels, federation upstreams, limits) as JSON, **credentials masked**. |
+| `global_parameters()` | Cluster-wide parameters (cluster_name, ...), masked. |
+| `shovels(vhost)` | Shovel status: state, reason, node, since, endpoints (masked). Needs `rabbitmq_shovel_management`. |
+| `definitions_summary(vhost)` | Object counts per section of the definitions export (only counts leave the worker). |
+| `health_checks(cert_within, cert_unit)` | One row per health check: alarms, local alarms, certificate expiry, quorum-critical, virtual hosts, in-service, connection limit, ready-to-serve. |
+| `feature_flags()` | State and stability of every feature flag (upgrade readiness). |
+| `deprecated_features()` | Deprecation phase and whether the feature is **in use**. |
+| `stream_messages(vhost, stream, start_offset, start_timestamp, max_messages, batch_size, idle_timeout_ms)` | Messages of a stream, non-destructive (AMQP). |
+| `peek_messages(vhost, queue, count, peek_requeue, truncate)` | Messages at the head of a classic/quorum queue; **re-queues them; opt-in only**. |
+| `topic_matches(pattern, routing_key)` | `BOOLEAN`: does a topic binding key (`*`, `#`) match a routing key? Offline. |
+| `mask_uri(text)` | Masks passwords in URIs and password-like query parameters. Offline. |
+
+Maps (`arguments`, `effective_policy_definition`, `definition`, `limits`, `headers`,
+`cluster_state`) are `MAP(VARCHAR, VARCHAR)` with values as text, so
+`arguments['x-queue-type']` and `definition['message-ttl']` just work. Rates are messages
+(or bytes) per second from the broker's last sample; they are `NULL` when the broker
+collects no stats for the object.
+
+**Credential masking.** `parameters`, `global_parameters` and `shovels` replace the password
+in every `scheme://user:password@host` URI with `****`, the value of `password`/`token`/
+`secret`-style query parameters, and any JSON key whose name contains `password`,
+`secret`, `token`, `credential` or `private_key`. `mask_uri` applies the same rules to any
+text.
+
+## What pushes down
+
+The Management API's own filters are exposed as arguments, so they shrink the request,
+not just the result:
+
+| Argument | Becomes |
+|---|---|
+| `vhost := 'shop'` | the vhost path segment: `/api/queues/shop`, `/api/vhosts/shop/connections`, `/api/policies/shop`, `/api/definitions/shop`, ... (`'/'` is sent as `%2F`) |
+| `name := 'orders'` | `?name=orders`: a case-insensitive substring match |
+| `name := '^orders\.', use_regex := true` | `?name=^orders\.&use_regex=true`: a regular expression |
+| `page_size := 100` | `?page=N&page_size=100` on queues, exchanges, connections and channels |
+| `component := 'shovel'` | `/api/parameters/shovel` |
+
+Listings are **paginated with an externalized cursor**: the next page number lives in the
+table-function state, one page per batch, so over the HTTP transport each page can be
+served by a different request or worker process. A `WHERE` clause is evaluated by DuckDB;
+it is not translated into API filters, so use the arguments for large brokers.
+
+## Reading messages
+
+### Streams: `stream_messages` (non-destructive)
+
+A stream is an append-only log, so reading it never removes, reorders or redelivers
+anything. `stream_messages` subscribes over AMQP 0-9-1 with `x-stream-offset` and closes
+the subscription when done:
 
 ```sql
-SELECT count(*) FROM rabbitmq.main.fetch_items('https://vgi-starter-api.query-farm.services/v1/auth');   -- fails: HTTP 401
-CREATE SECRET (TYPE rabbitmq_api, TOKEN 'demo-token');
-SELECT count(*) FROM rabbitmq.main.fetch_items('https://vgi-starter-api.query-farm.services/v1/auth');   -- 25
+SELECT sequence, key, payload_text::JSON->>'order_id' AS order_id, headers['tenant'] AS tenant
+FROM rabbitmq.main.stream_messages('shop', 'events', start_offset := 'first')
+ORDER BY sequence;
 ```
 
-Never bake credentials into the image or the source. If a function can't run without
-real credentials, its examples can't execute in CI either. Set `execute: false` on the
-metadata check for that worker (see `.github/workflows/ci.yml`), and add
-`LINT_ARGS ?= --no-execute` to the Makefile so local runs match.
+- `start_offset`: `'first'` (default, oldest retained), `'last'` (start of the last chunk),
+  `'next'` (only messages published from now on) or a numeric offset;
+  `start_timestamp := TIMESTAMPTZ '...'` starts at the first chunk at or after that time.
+- The scan ends after `max_messages` (default 1000) or when no message arrives for
+  `idle_timeout_ms` (default 1000): the tail of the stream.
+- The **next offset is the externalized cursor**. Each batch (`batch_size`, default 500)
+  opens its own connection at that offset, so a long read resumes across batches and
+  transports.
+- Subscriptions start at a chunk boundary; messages before the requested offset are
+  skipped. Deliveries are acknowledged only to return flow-control credit (streams require
+  a prefetch); a stream never removes anything on ack.
+- **It refuses anything that is not a stream**, three ways: it asks the Management API for
+  the queue type first (when `MANAGEMENT_URL` is set); the broker itself rejects
+  `x-stream-offset` on a classic or quorum queue; and a delivery without an
+  `x-stream-offset` header is never acknowledged (closing the channel re-queues it).
 
-## Testing
+### Classic and quorum queues: `peek_messages` (re-queues, opt-in)
 
-```bash
-make test-unit                 # fast Go unit tests
-make test-sql                  # test/sql/*.test through DuckDB (stdio)
-make test-sql TRANSPORT=http   # …over HTTP (also: launch)
-make check                     # everything CI runs
+> **Warning.** RabbitMQ has no read-only peek for classic and quorum queues. The only HTTP
+> way is `POST /api/queues/{vhost}/{queue}/get` with `ackmode=reject_requeue_true`, which
+> **delivers the messages and puts them back**. Each fetched message is marked
+> `redelivered`; a **quorum queue counts a delivery attempt** against its `delivery-limit`
+> (a message can then be dead-lettered or dropped); with active consumers the **order can
+> change**. `peek_messages` therefore refuses to run unless you pass `peek_requeue := true`.
+> Prefer streams for anything you need to read repeatedly.
+
+```sql
+SELECT message_id, key, payload_text, headers['x-death'] AS deaths
+FROM rabbitmq.main.peek_messages('shop', 'orders.dlq', count := 20, peek_requeue := true);
 ```
 
-`test/sql/*.test` files are [sqllogictest](https://duckdb.org/docs/stable/dev/sqllogictest/intro)
-scripts. `ci/run-integration.sh` runs them against your worker and fails on any
-unexpected skip, so a broken transport can't hide behind a green run.
-`fetch_items` is tested against `test/mock_api/server.py` so tests are fast and
-offline.
+Bodies are truncated to `truncate` bytes (default 50,000; `payload_bytes` is the full size).
 
-**Testing against real data:** put live tests in their own `.test` file that starts with
-`require-env RABBITMQ_LIVE`. They run only when that variable is set. Add the skip reason
-to `EXPECTED_SKIP_REASONS` in CI.
+### Messaging vocabulary
 
-## Metadata and the quality score
+Shared by `stream_messages` and `peek_messages`, and the column contract for the other
+Query.Farm messaging workers (vgi-kafka, vgi-kinesis, vgi-nats, vgi-pubsub) where the
+concept exists:
 
-DuckDB, agents and documentation tools discover your functions through their metadata:
-titles, descriptions, argument docs, examples and keywords.
-[vgi-lint](https://github.com/Query-farm/vgi-lint-check) checks it, and CI runs it on
-every push. Its settings live in `vgi-lint.toml`, which `make lint-explain`,
-`vgi-lint lint`, and CI all read. This template scores 100/100 with no findings.
-
-```bash
-make lint-explain                              # findings, each with its fix
-make lint-explain LINT_ARGS="--format agent"   # the same, grouped for coding agents
-make lint-ai                                   # optional: an agent must solve vgi-agent-tests.yaml
-```
-
-Each report also states an **assurance level**: how much was actually verified.
-
-| Level | Reached when | Here |
+| Column | Type | Meaning |
 |---|---|---|
-| L1 structural | the static metadata is clean | workers that need real credentials (`execute: false` in CI) |
-| L2 behavioural | the examples also run and return what they claim | **the CI gate** |
-| L3 semantic | an agent solves the worker's own test tasks, and the docs are reviewed | `make lint-ai`, before publishing |
+| *source columns* | `VARCHAR` | Where the message came from: here `vhost`, `queue`; Kafka `topic`, `partition`; NATS `stream`, `subject`; Pub/Sub `subscription`. |
+| `sequence` | `BIGINT` | The message's position in its source: RabbitMQ stream offset, NATS stream sequence, Kafka offset. `NULL` where the source has no stable position (a classic queue). Named `sequence` because `OFFSET` is a reserved SQL word. |
+| `timestamp` | `TIMESTAMPTZ` | Publish time: the AMQP `timestamp` property here (NULL when the publisher did not set it); the broker/log append time elsewhere. |
+| `key` | `VARCHAR` | The routing/partition key: AMQP routing key, Kafka key (as text), NATS subject, Pub/Sub ordering key. |
+| `payload` | `BLOB` | The raw body bytes. |
+| `payload_text` | `VARCHAR` | The body as text when it is valid UTF-8, else `NULL`; cast with `::JSON`. |
+| `payload_bytes` | `BIGINT` | Full body size (before any truncation). |
+| `headers` | `MAP(VARCHAR, VARCHAR)` | Message headers/attributes, values as text (nested values as JSON). |
+| `redelivered` | `BOOLEAN` | Delivered before (where the system tracks it). |
 
-- **How strict.** Your copy fails on warnings (`fail_on = "warning"` in `vgi-lint.toml`).
-  Raise it to `"info"` before you publish the worker for others.
-- **The linter isn't pinned.** It tracks the current quality bar, so a new rule can flag
-  metadata that passed yesterday. Fix it, or waive the finding.
-- **Waivers.** If a finding is genuinely wrong for your worker, waive it in
-  `vgi-lint.toml` with a `kind` and a `reason`.
-- **Existing workers.** If you're adding this gate to a worker that already has
-  findings, record them with `vgi-lint lint --baseline vgi-lint-baseline --update-baseline`
-  and set `baseline` in `vgi-lint.toml`. After that, only new findings fail.
+System-specific properties follow these columns (here `exchange`, `content_type`,
+`content_encoding`, `message_id`, `correlation_id`, `reply_to`, `message_type`, `app_id`,
+`user_id`, `priority`, `delivery_mode`, `expiration`).
 
-Metadata lives in `internal/rabbitmq/meta.go` and each function's `Metadata()`.
+**Consumer lag.** RabbitMQ queues have no per-consumer offsets, so a queue's lag is its
+backlog: `queues().messages_ready` (not yet delivered) plus `messages_unacknowledged` (in
+flight). Kafka-style `lag` columns elsewhere mean "messages the consumer has not processed",
+which is `messages_ready` here.
 
-## Logging and debugging
-
-stdout carries the Arrow protocol, so **never print to stdout**. Log to stderr instead.
-Use `log/slog` (the SDK configures it to write to stderr); `--debug` or `--log-level debug` turns it up.
-
-- Under DuckDB (stdio/launch), worker stderr shows up in DuckDB's error messages and
-  terminal.
-- In Docker it goes to `docker logs`.
-- `make debug` runs one query against the worker with debug logging on.
-
-## Deploying
-
-The same binary serves stdio (DuckDB starts it locally) or HTTP (you host it):
-
-```bash
-docker build -t weather-worker .
-docker run -p 8000:8000 -e RABBITMQ_API_TOKEN=... weather-worker   # health: GET /health
-```
+## Examples
 
 ```sql
-ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'https://workers.example.com/rabbitmq');
+-- Where would a message with routing key orders.created.eu go? (topic semantics, offline)
+SELECT destination_type, destination
+FROM rabbitmq.main.bindings(vhost := 'shop')
+WHERE source = 'orders' AND rabbitmq.main.topic_matches(routing_key, 'orders.created.eu');
+
+-- Queues no exchange routes to (reachable only through the default exchange).
+SELECT q.vhost, q.name FROM rabbitmq.main.queues() q
+ANTI JOIN (SELECT vhost, destination FROM rabbitmq.main.bindings()
+           WHERE source <> '' AND destination_type = 'queue') b
+  ON b.vhost = q.vhost AND b.destination = q.name;
+
+-- Is anything blocking publishers?
+SELECT name, mem_alarm, disk_free_alarm, partitions FROM rabbitmq.main.nodes()
+WHERE mem_alarm OR disk_free_alarm OR len(partitions) > 0;
+SELECT check_name, reason FROM rabbitmq.main.health_checks() WHERE NOT ok;
+
+-- Upgrade readiness: flags not enabled and deprecated features in use.
+SELECT name FROM rabbitmq.main.feature_flags() WHERE state <> 'enabled' AND stability = 'stable';
+SELECT name, deprecation_phase FROM rabbitmq.main.deprecated_features() WHERE in_use;
+
+-- Who can write where?
+SELECT u.name, p.vhost, p.write FROM rabbitmq.main.users() u
+JOIN rabbitmq.main.permissions() p ON p.user = u.name ORDER BY u.name, p.vhost;
+
+-- Snapshot queue depth to Parquet every few minutes for trend analysis.
+COPY (SELECT now() AS at, vhost, name, messages_ready, messages_unacknowledged, consumers
+      FROM rabbitmq.main.queues()) TO 'queue_depth.parquet';
 ```
 
-Put hosted workers behind TLS and authentication. See
-[authentication](https://query.farm/vgi/authentication) for bearer tokens and JWTs, and
-[distributing a worker](https://query.farm/vgi/distributing-a-worker) for packaging.
-Pass secrets with `-e` or your platform's secret manager.
+## How it is tested
 
-## Releasing
+`make check` runs gofmt, go vet, golangci-lint, `go test` (masking, topic matching, value
+decoding, retries, pagination, health-check 503 handling, message rows), the SQL suite over
+the stdio, launch and HTTP transports, and vgi-lint at `fail_on = "info"`.
 
-Push a tag like `v0.1.0`. The release workflow builds signed binaries for linux (amd64, arm64), macOS (arm64) and Windows (amd64) as static pure-Go binaries, and attaches them to the GitHub release. Users download the archive for their platform and point `LOCATION` at the binary inside. Go developers can also `go install github.com/Query-farm/vgi-rabbitmq/cmd/vgi-rabbitmq-worker@v0.1.0`. Every artifact is signed with cosign and
-carries SLSA build provenance. `ci/check-version.sh` makes sure the tag matches the
-version in `internal/rabbitmq/version.go`.
+**CI needs no Docker and no credentials.** `test/sql/rabbitmq.test` talks to
+`test/fixture_server/server.py`, which replays **recorded Management API responses** from
+`test/fixture_server/recorded.json` (keyed by method, raw path, sorted query and, for POST,
+the JSON body) plus `handwritten.json`, served under a `/broken` path prefix, for shapes a
+healthy broker will not produce on demand (failing health checks, memory/disk alarms,
+partitions, a 500, 3.x-style users with password hashes, nested credentials). The runner
+starts two copies: one answers every request with **429 then 503** (both `Retry-After: 0`)
+before the real answer, so retries are always exercised; the other demands basic auth or a
+bearer token.
 
-## Using with coding agents
+**The recordings come from a real broker.** `test/fixture/run-rabbitmq.sh start` runs
+`rabbitmq:4-management` (RabbitMQ 4.4, about 160 MB RAM, capped at 512 MB) with
+`definitions.json` imported at boot: two vhosts, three users, permissions and topic
+permissions, classic queues, a **quorum** queue with a delivery limit, a **stream**,
+topic/fanout/headers exchanges, an exchange-to-exchange binding, a policy, a **shovel and a
+federation upstream with fake credentials in their URIs**. `seed.py` publishes six
+deterministic messages (fixed ids, headers and AMQP timestamps, one binary body).
+`hold_consumer.py` keeps a consumer with prefetch 2 open so connections, channels,
+consumers and unacknowledged counts are non-empty.
 
-[AGENTS.md](AGENTS.md) is written for AI coding agents (Claude Code reads it via
-`CLAUDE.md`; Codex, Cursor and others read it directly). It covers the commands, the
-recipe for adding a function, the metadata checklist and the sharp edges. A good first
-prompt:
+`test/sql/stream.test` exercises `stream_messages` over AMQP and needs the live broker. It
+is skipped without it, and that skip (`require-env RABBITMQ_LIVE_URL`) is the only one the
+runner allows. To run it and to re-record:
 
-> Read AGENTS.md. Replace `fetch_items` with `forecast(lat DOUBLE, lon DOUBLE)` that calls
-> the Open-Meteo API. Include full metadata, a mock-server test and a `RABBITMQ_LIVE` test.
-> You're done when `make check` passes.
+```bash
+test/fixture/run-rabbitmq.sh start      # prints the management URL and AMQP URL
+uv run --no-project --with pika==1.3.2 python test/fixture/hold_consumer.py \
+    amqp://admin:admin-pass@127.0.0.1:35673/shop &
+rm test/fixture_server/recorded.json    # only to re-record
+RABBITMQ_RECORD_UPSTREAM=http://127.0.0.1:35672 \
+RABBITMQ_LIVE_URL=http://127.0.0.1:35672 \
+RABBITMQ_AMQP_URL=amqp://admin:admin-pass@127.0.0.1:35673/ \
+RABBITMQ_AMQP_NOAUTH_URL=amqp://127.0.0.1:35673/ make test-sql
+kill %1; test/fixture/run-rabbitmq.sh stop
+```
 
-## Keeping up with the template
+Point the worker at either fixture through the secret's `MANAGEMENT_URL` / `AMQP_URL`;
+there are no test-only code paths.
 
-`make template-diff` shows what changed upstream (CI, docs, examples) since your copy was
-made. Your copy records its template version in `.vgi-rabbitmq.json`.
+## Known limitations
 
-## Learn more
+- `WHERE` clauses are not translated into API filters; use `vhost :=` and `name :=`.
+- `stream_messages` uses AMQP 0-9-1, not the binary stream protocol (port 5552): no
+  super streams, no server-side offset tracking, no filter values. Each batch opens a new
+  connection.
+- There is no non-destructive peek for classic and quorum queues in RabbitMQ;
+  `peek_messages` is the documented opt-in compromise.
+- Federation link status (`/api/federation-links`), stream protocol consumers and their
+  offset lag (`/api/stream/consumers`, rabbitmq_stream_management) and per-object
+  `columns=` projection are not exposed yet.
+- `idle_since` and other times come from the broker's clock; rates are `NULL` when the
+  broker runs with `management.rates_mode = none` or `disable_stats`.
 
-- [What is VGI?](https://query.farm/vgi) · [Getting started](https://query.farm/vgi/getting-started) · [Building a worker](https://query.farm/vgi/building-a-worker)
-- [Go SDK docs](https://query.farm/vgi/docs/go/): [scalar tutorial](https://query.farm/vgi/docs/go/tutorial/scalar/), [table tutorial](https://query.farm/vgi/docs/go/tutorial/table/)
-- [Distributing a worker](https://query.farm/vgi/distributing-a-worker) · [Choosing a language](https://query.farm/vgi/languages) · [llms.txt](https://query.farm/vgi/llms.txt)
-- SDK source: [vgi-go](https://github.com/Query-farm/vgi-go) · RPC layer: [https://vgi-rpc-go.query.farm](https://vgi-rpc-go.query.farm)
+## Development
+
+See [AGENTS.md](AGENTS.md) for the layout, the recipe for adding a function and the sharp
+edges. `make help` lists the targets; `make template-diff` shows upstream starter changes
+(this worker started from vgi-starter-go v1.3.0).
 
 ## Support
 
 Open an issue on this repository. For VGI itself, see [query.farm](https://query.farm).
 
-## Authorship & license
+## Authorship & License
 
-The starter template is written by [Query.Farm](https://query.farm) and released under
-the [BSD Zero Clause License](LICENSE) (0BSD). Use it for anything, with no attribution
-required. Replace this section with your own license once the code is yours.
+Copyright 2026 Query Farm LLC - https://query.farm
+
+Released under the [BSD Zero Clause License](LICENSE) (0BSD). RabbitMQ is a trademark of
+Broadcom Inc.; this worker is not affiliated with or endorsed by Broadcom or the RabbitMQ
+project. It uses [amqp091-go](https://github.com/rabbitmq/amqp091-go) (BSD-2-Clause).

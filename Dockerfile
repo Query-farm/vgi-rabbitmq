@@ -20,7 +20,7 @@ FROM debian:bookworm-slim
 ARG VERSION=0.0.0
 ARG GIT_COMMIT=unknown
 LABEL org.opencontainers.image.title="vgi-rabbitmq-worker" \
-      org.opencontainers.image.description="A VGI worker for DuckDB" \
+      org.opencontainers.image.description="RabbitMQ Management API and stream reads as SQL for DuckDB (VGI worker)" \
       org.opencontainers.image.source="https://github.com/Query-farm/vgi-rabbitmq" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_COMMIT}" \

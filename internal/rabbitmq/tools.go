@@ -77,7 +77,7 @@ var topicExamples = []vgi.CatalogExample{
 }
 
 var topicExecutable = []executableExample{{Description: "Topic wildcards: * is one word, # is zero or more",
-	SQL: "SELECT p, rabbitmq.main.topic_matches(p, 'orders.created.eu') AS hit FROM (VALUES ('orders.*'), ('orders.*.eu'), ('orders.#'), ('#'), ('*.paid')) t(p) ORDER BY p",
+	SQL:      "SELECT p, rabbitmq.main.topic_matches(p, 'orders.created.eu') AS hit FROM (VALUES ('orders.*'), ('orders.*.eu'), ('orders.#'), ('#'), ('*.paid')) t(p) ORDER BY p",
 	Expected: [][]any{{"#", true}, {"*.paid", false}, {"orders.#", true}, {"orders.*", false}, {"orders.*.eu", true}}}}
 
 // Name is the SQL name.
@@ -138,7 +138,7 @@ var maskExamples = []vgi.CatalogExample{
 }
 
 var maskExecutable = []executableExample{{Description: "Mask passwords in URIs and query strings",
-	SQL: "SELECT rabbitmq.main.mask_uri(u) AS masked FROM (VALUES ('amqp://app:s3cret@mq:5672/shop'), ('amqps://mq/?password=x&heartbeat=5'), ('amqp://mq')) t(u) ORDER BY masked",
+	SQL:      "SELECT rabbitmq.main.mask_uri(u) AS masked FROM (VALUES ('amqp://app:s3cret@mq:5672/shop'), ('amqps://mq/?password=x&heartbeat=5'), ('amqp://mq')) t(u) ORDER BY masked",
 	Expected: [][]any{{"amqp://app:****@mq:5672/shop"}, {"amqp://mq"}, {"amqps://mq/?password=****&heartbeat=5"}}}}
 
 // Name is the SQL name.
