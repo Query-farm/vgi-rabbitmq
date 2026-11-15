@@ -41,6 +41,7 @@ var SchemaCategories = []category{
 	{Name: "access", Title: "Access Control", Description: "Users, vhost permissions and topic permissions (no password hashes)."},
 	{Name: "config", Title: "Configuration", Description: "Policies, operator policies, runtime and global parameters, shovels and the definitions export."},
 	{Name: "health", Title: "Health", Description: "Health checks, feature flags and deprecated features in use."},
+	{Name: "tools", Title: "Offline Tools", Description: "Topic-binding matching and credential masking that run locally with no broker."},
 	{Name: "messages", Title: "Messages", Description: "Non-destructive stream reads and opt-in re-queueing peeks at queue messages."},
 }
 
@@ -121,6 +122,18 @@ func exampleQueries(lists ...[]vgi.CatalogExample) []exampleQuery {
 	return out
 }
 
+// firstExamples keeps each function's first example, so the schema-level
+// list stays within the agent tools' context limit.
+func firstExamples(lists ...[]vgi.CatalogExample) []exampleQuery {
+	heads := make([][]vgi.CatalogExample, 0, len(lists))
+	for _, l := range lists {
+		if len(l) > 0 {
+			heads = append(heads, l[:1])
+		}
+	}
+	return exampleQueries(heads...)
+}
+
 // withExamples publishes examples (with descriptions) as vgi.example_queries.
 // Overloads share one SQL name, so pass every overload's examples.
 func withExamples(tags map[string]string, lists ...[]vgi.CatalogExample) map[string]string {
@@ -158,9 +171,10 @@ const catalogDocMDLong = "# RabbitMQ in DuckDB\n\n" +
 const schemaDocLLM = "The main schema holds every function; all are table functions. Each takes an optional secret_name named argument " +
 	"(default: the rabbitmq secret whose scope matches). Most listings take vhost := (pushed into the API path); queues, exchanges, " +
 	"connections and channels also take name := (case-insensitive substring, or a regex with use_regex := true) and page_size := " +
-	"(max 500). Arguments, policy definitions and headers are MAP(VARCHAR, VARCHAR) with values as text: read one with " +
-	"arguments['x-queue-type']. Times are TIMESTAMPTZ, counters BIGINT, rates DOUBLE per second. stream_messages and peek_messages " +
-	"share the messaging columns sequence, timestamp, key, payload (BLOB), payload_text, headers."
+	"(max 500). Arguments, policy definitions and headers are `MAP(VARCHAR, VARCHAR)` with values as text: read one with " +
+	"arguments['x-queue-type']. Times are `TIMESTAMPTZ`, counters `BIGINT`, rates `DOUBLE` per second. stream_messages and peek_messages " +
+	"share the messaging columns sequence, timestamp, key, payload (`BLOB`), payload_text, headers. topic_matches and mask_uri are " +
+	"offline scalars that need no secret."
 
 // SchemaDocMD is the main schema's human-facing description (also its comment).
 const SchemaDocMD = "## main\n\n" +
@@ -186,6 +200,23 @@ var agentTestTasks = []agentTask{
 	{Name: "node_alarms", Prompt: "Is any RabbitMQ node under a memory or disk alarm?"},
 	{Name: "stream_keys", Prompt: "How many messages per routing key are in the 'events' stream of vhost 'shop'? Do not consume anything."},
 	{Name: "server_version", Prompt: "Which RabbitMQ version is the broker running?"},
+	{Name: "vhost_descriptions", Prompt: "List the broker's virtual hosts with their descriptions."},
+	{Name: "topic_exchanges", Prompt: "Which topic exchanges are declared in vhost 'shop' (ignore the built-in amq.* ones)?"},
+	{Name: "client_libraries", Prompt: "Which users are connected to the broker, and with what client connection name?"},
+	{Name: "unacked_channels", Prompt: "Which channels hold unacknowledged messages, and how many?"},
+	{Name: "queue_consumers", Prompt: "Which queues have consumers, and what prefetch do they use?"},
+	{Name: "readonly_users", Prompt: "Which users have read-only access (no configure and no write permission) to vhost 'shop'?"},
+	{Name: "topic_restrictions", Prompt: "Which routing keys may user orders-app publish to the orders exchange?"},
+	{Name: "operator_limits", Prompt: "How many operator policies are defined on the broker?"},
+	{Name: "cluster_name_param", Prompt: "What cluster name is stored in the broker's global parameters?"},
+	{Name: "broken_shovels", Prompt: "Which shovels are not running, and why?"},
+	{Name: "definition_counts", Prompt: "How many queues, exchanges and bindings are in the broker's definitions export?"},
+	{Name: "failing_checks", Prompt: "Do any of the broker's health checks fail?"},
+	{Name: "disabled_flags", Prompt: "How many feature flags are not enabled?"},
+	{Name: "deprecated_in_use", Prompt: "Is the broker using any deprecated features?"},
+	{Name: "dlq_contents", Prompt: "What message IDs sit in the orders.dlq queue of vhost 'shop'? Re-queueing them is acceptable."},
+	{Name: "route_simulation", Prompt: "Using topic binding semantics, which destinations would a message published to exchange 'orders' in vhost 'shop' with routing key 'orders.created.eu' reach?"},
+	{Name: "masked_uri", Prompt: "Mask the password in the connection string 'amqp://app:s3cret@mq:5672/shop'."},
 }
 
 // CatalogTags are the catalog-level discovery tags.

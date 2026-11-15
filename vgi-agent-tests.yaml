@@ -1,16 +1,79 @@
 # Private graders for the public vgi.agent_test_tasks in the worker's catalog metadata.
-# `vgi-lint lint --ai` runs an agent on each prompt and grades it with check_sql.
+# `vgi-lint lint --ai` runs an agent on each prompt and grades it with reference_sql / check_sql.
 # See https://github.com/Query-farm/vgi-lint-check (VGI920).
+# Every task needs a rabbitmq secret pointing at the fixture broker
+# (test/fixture/run-rabbitmq.sh, or the replay server in test/fixture_server).
 tasks:
-  - name: formal_greeting
-    reference_sql: SELECT rabbitmq.main.greet('Grace', 'formal') AS greeting
-  - name: sum_of_squares
-    reference_sql: SELECT sum(squared) AS total FROM rabbitmq.main.sequence_table(10)
-  - name: stepped_sequence
-    reference_sql: SELECT n FROM rabbitmq.main.sequence_table(4, step := 5) ORDER BY n
-  # Reads the public demo API (https://vgi-starter-api.query-farm.services/v1).
-  - name: items_per_category
+  - name: backlog
+    reference_sql: >-
+      SELECT name, messages_ready FROM rabbitmq.main.queues(vhost := 'shop')
+      WHERE messages_ready > 0 ORDER BY name
+  - name: queue_types
+    reference_sql: SELECT type, count(*) AS queues FROM rabbitmq.main.queues() GROUP BY type ORDER BY type
+  - name: routes_from_orders
+    reference_sql: >-
+      SELECT destination, destination_type, routing_key FROM rabbitmq.main.bindings(vhost := 'shop')
+      WHERE source = 'orders' ORDER BY destination
+  - name: admins
+    reference_sql: SELECT name FROM rabbitmq.main.users() WHERE list_contains(tags, 'administrator') ORDER BY name
+  - name: shovel_destination
     check_sql: >-
-      SELECT count(*) = 3 AND sum(items) = 25
-      FROM (SELECT category, count(*) AS items
-            FROM rabbitmq.main.fetch_items('https://vgi-starter-api.query-farm.services/v1') GROUP BY category)
+      SELECT count(*) = 1 FROM rabbitmq.main.parameters(component := 'shovel')
+      WHERE name = 'orders-to-archive'
+        AND json_extract_string(value, '$."dest-uri"') = 'amqp://shovel_user:****@archive.invalid:5672/archive'
+  - name: policy_ttl
+    reference_sql: >-
+      SELECT q.name, p.definition['message-ttl'] AS ttl_ms FROM rabbitmq.main.policies(vhost := 'shop') p
+      JOIN rabbitmq.main.queues(vhost := 'shop') q ON q.policy = p.name WHERE p.name = 'orders-ttl' ORDER BY q.name
+  - name: node_alarms
+    reference_sql: SELECT bool_or(mem_alarm OR disk_free_alarm) AS any_alarm FROM rabbitmq.main.nodes()
+  - name: stream_keys
+    reference_sql: >-
+      SELECT key, count(*) AS messages FROM rabbitmq.main.stream_messages('shop', 'events')
+      GROUP BY key ORDER BY key
+  - name: server_version
+    reference_sql: SELECT rabbitmq_version FROM rabbitmq.main.overview()
+  - name: vhost_descriptions
+    reference_sql: SELECT name, description FROM rabbitmq.main.vhosts() ORDER BY name
+  - name: topic_exchanges
+    reference_sql: >-
+      SELECT name FROM rabbitmq.main.exchanges(vhost := 'shop') WHERE type = 'topic' AND name NOT LIKE 'amq.%' ORDER BY name
+  - name: client_libraries
+    reference_sql: SELECT user, client_connection_name FROM rabbitmq.main.connections() ORDER BY user
+  - name: unacked_channels
+    reference_sql: >-
+      SELECT name, messages_unacknowledged FROM rabbitmq.main.channels() WHERE messages_unacknowledged > 0 ORDER BY name
+  - name: queue_consumers
+    reference_sql: SELECT vhost, queue, prefetch_count FROM rabbitmq.main.consumers() ORDER BY vhost, queue
+  - name: readonly_users
+    reference_sql: >-
+      SELECT user FROM rabbitmq.main.permissions(vhost := 'shop') WHERE configure IN ('', '^$') AND write IN ('', '^$') ORDER BY user
+  - name: topic_restrictions
+    reference_sql: >-
+      SELECT write FROM rabbitmq.main.topic_permissions() WHERE user = 'orders-app' AND exchange = 'orders'
+  - name: operator_limits
+    reference_sql: SELECT count(*) AS operator_policies FROM rabbitmq.main.operator_policies()
+  - name: cluster_name_param
+    check_sql: >-
+      SELECT count(*) = 1 FROM rabbitmq.main.global_parameters() WHERE name = 'cluster_name' AND value = '"vgi-fixture"'
+  - name: broken_shovels
+    reference_sql: SELECT vhost, name, state, reason FROM rabbitmq.main.shovels() WHERE state <> 'running' ORDER BY vhost, name
+  - name: definition_counts
+    reference_sql: >-
+      SELECT object_type, object_count FROM rabbitmq.main.definitions_summary()
+      WHERE object_type IN ('queues', 'exchanges', 'bindings') ORDER BY object_type
+  - name: failing_checks
+    reference_sql: SELECT check_name, reason FROM rabbitmq.main.health_checks() WHERE NOT ok ORDER BY check_name
+  - name: disabled_flags
+    reference_sql: SELECT count(*) AS disabled FROM rabbitmq.main.feature_flags() WHERE state <> 'enabled'
+  - name: deprecated_in_use
+    reference_sql: SELECT name FROM rabbitmq.main.deprecated_features() WHERE in_use ORDER BY name
+  - name: dlq_contents
+    reference_sql: >-
+      SELECT message_id FROM rabbitmq.main.peek_messages('shop', 'orders.dlq', count := 100, peek_requeue := true) ORDER BY message_id
+  - name: route_simulation
+    reference_sql: >-
+      SELECT destination FROM rabbitmq.main.bindings(vhost := 'shop')
+      WHERE source = 'orders' AND rabbitmq.main.topic_matches(routing_key, 'orders.created.eu') ORDER BY destination
+  - name: masked_uri
+    reference_sql: SELECT rabbitmq.main.mask_uri('amqp://app:s3cret@mq:5672/shop') AS masked

@@ -77,6 +77,9 @@ jobs:
           export WORKER="$PWD/bin/vgi-rabbitmq-worker$exe"
           export HAYBARN_UNITTEST="$tools/haybarn-unittest$exe"
           export RECIPES_WORKER="$PWD/bin/recipes$exe"
+          # test/sql/stream.test reads streams over AMQP from a live broker; CI replays
+          # recorded Management API responses only, so that file is the one allowed skip.
+          export EXPECTED_SKIP_REASONS="require-env RABBITMQ_LIVE_URL"
           TRANSPORT=${{ matrix.transport }} PYTHON="uv run --no-project python" ci/run-integration.sh
 
   metadata:
@@ -96,8 +99,12 @@ jobs:
           location: ${{ github.workspace }}/bin/vgi-rabbitmq-worker
           # Set in vgi-lint.toml, so local runs and CI agree.
           fail-on: ${{ steps.lintcfg.outputs.fail_on }}
-          # Set to false if your examples need real credentials or network access.
-          execute: true
+          # Credential-gated: every table function (rabbitmq.main.overview, queues, exchanges,
+          # bindings, ..., stream_messages, peek_messages) needs a `rabbitmq` secret
+          # (MANAGEMENT_URL plus USERNAME/PASSWORD or BEARER_TOKEN, AMQP_URL for streams) for a
+          # live RabbitMQ broker, so examples are not executed here. The offline scalars
+          # (topic_matches, mask_uri) are covered by the SQL tests.
+          execute: "false"
 
   docker:
     name: Docker image smoke test

@@ -171,7 +171,7 @@ var vhostsColumns = []arrow.Field{
 var vhostsExamples = []vgi.CatalogExample{
 	{SQL: "SELECT name, default_queue_type, messages_ready, messages_unacknowledged FROM rabbitmq.main.vhosts() ORDER BY messages_ready DESC NULLS LAST, name",
 		Description: "Virtual hosts ordered by backlog"},
-	{SQL: "SELECT name, map_keys(cluster_state) AS nodes FROM rabbitmq.main.vhosts() WHERE NOT list_bool_and(list_transform(map_values(cluster_state), s -> s = 'running')) ORDER BY name",
+	{SQL: "SELECT name, map_keys(cluster_state) AS nodes FROM rabbitmq.main.vhosts() WHERE len(list_filter(map_values(cluster_state), lambda s: s <> 'running')) > 0 ORDER BY name",
 		Description: "Vhosts that are not running on every node"},
 }
 

@@ -393,3 +393,37 @@ statement error
 SELECT * FROM rabbitmq.main.stream_messages('shop', 'events');
 ----
 AMQP_URL
+
+# ------------------------------------------------------------------ offline tools
+
+query TT
+SELECT p, rabbitmq.main.topic_matches(p, 'orders.created.eu') FROM (VALUES ('orders.*'), ('orders.*.eu'), ('orders.#'), ('#'), ('*.paid'), ('orders.created.eu.#'), (NULL)) t(p) ORDER BY p NULLS LAST;
+----
+#	true
+*.paid	false
+orders.#	true
+orders.*	false
+orders.*.eu	true
+orders.created.eu.#	true
+NULL	NULL
+
+# Routing simulation: where would orders.created.eu go?
+query T
+SELECT destination FROM rabbitmq.main.bindings(vhost := 'shop') WHERE source = 'orders' AND rabbitmq.main.topic_matches(routing_key, 'orders.created.eu') ORDER BY destination;
+----
+events
+orders.archive
+orders.created
+
+query T
+SELECT rabbitmq.main.mask_uri(u) FROM (VALUES ('amqp://app:s3cret@mq:5672/shop'), ('amqps://mq/?password=x&heartbeat=5'), (NULL)) t(u) ORDER BY 1 NULLS LAST;
+----
+amqp://app:****@mq:5672/shop
+amqps://mq/?password=****&heartbeat=5
+NULL
+
+# Many rows across batches.
+query II
+SELECT count(*), count(*) FILTER (WHERE rabbitmq.main.topic_matches('a.#', 'a.' || i::VARCHAR)) FROM range(5000) t(i);
+----
+5000	5000

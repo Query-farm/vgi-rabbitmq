@@ -21,11 +21,11 @@ import (
 
 // allExamples lists every function's examples for the schema-level tag.
 func allExamples() []exampleQuery {
-	return exampleQueries(overviewExamples, nodesExamples, vhostsExamples, queuesExamples, exchangesExamples,
+	return firstExamples(overviewExamples, nodesExamples, vhostsExamples, queuesExamples, exchangesExamples,
 		bindingsExamples, connectionsExamples, channelsExamples, consumersExamples, usersExamples, permissionsExamples,
 		topicPermissionsExamples, policyExamples, operatorPolicyExamples, parametersExamples, globalParametersExamples,
 		shovelsExamples, definitionsExamples, healthExamples, featureFlagExamples, deprecatedExamples, streamExamples,
-		peekExamples)
+		peekExamples, topicExamples, maskExamples)
 }
 
 // NewWorker builds the worker: one catalog, one main schema. Extra options
@@ -49,5 +49,7 @@ func NewWorker(opts ...vgi.WorkerOption) *vgi.Worker {
 		w.RegisterTable(f)
 	}
 	w.RegisterTable(vgi.AsTableFunction[StreamState](&StreamMessagesFunc{}))
+	w.RegisterScalar(vgi.AsScalarFunction[topicArgs](&TopicMatches{}))
+	w.RegisterScalar(vgi.AsScalarFunction[maskArgs](&MaskURI{}))
 	return w
 }

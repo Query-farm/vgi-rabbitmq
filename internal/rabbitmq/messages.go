@@ -136,8 +136,10 @@ var streamExamples = []vgi.CatalogExample{
 		Description: "Message counts per routing key from offset 2 on"},
 }
 
+// Name is the SQL name.
 func (f *StreamMessagesFunc) Name() string { return "stream_messages" }
 
+// Metadata describes the function for DuckDB, agents and vgi-lint.
 func (f *StreamMessagesFunc) Metadata() vgi.FunctionMetadata {
 	return meta(docs{Title: "Read Stream Messages", Category: "messages",
 		Keywords: "stream, peek, read messages, replay, offset, non-destructive, amqp, x-stream-offset, payload",
@@ -145,7 +147,7 @@ func (f *StreamMessagesFunc) Metadata() vgi.FunctionMetadata {
 			"reading never removes or reorders anything. Uses AMQP 0-9-1 (the secret's AMQP_URL) with x-stream-offset. Positional: vhost, stream. " +
 			"Named: start_offset ('first' default, 'last', 'next' or a numeric offset), start_timestamp (`TIMESTAMPTZ`, overrides start_offset), " +
 			"max_messages (default 1000), batch_size (default 500), idle_timeout_ms (default 1000: the scan ends when the tail is reached), secret_name. " +
-			"Columns: vhost, queue, sequence (stream offset), timestamp, key (routing key), exchange, payload BLOB, payload_text, payload_bytes, " +
+			"Columns: vhost, queue, sequence (stream offset), timestamp, key (routing key), exchange, payload `BLOB`, payload_text, payload_bytes, " +
 			"headers `MAP`, redelivered and AMQP properties. The next offset is the externalized cursor, so long reads resume across batches. " +
 			"Refuses non-stream queues (use peek_messages for those).",
 		DocMD: "## stream_messages(vhost, stream, start_offset := 'first', start_timestamp := NULL, max_messages := 1000)\n\n" +
@@ -153,12 +155,15 @@ func (f *StreamMessagesFunc) Metadata() vgi.FunctionMetadata {
 		"Read a stream's messages from an offset or time without consuming them (non-destructive)", messageColumns, streamExamples)()
 }
 
+// ArgumentSpecs derives the arguments from streamArgs.
 func (f *StreamMessagesFunc) ArgumentSpecs() []vgi.ArgSpec { return vgi.DeriveArgSpecs(streamArgs{}) }
 
+// OnBind returns the message schema (two-phase when secret_name is given).
 func (f *StreamMessagesFunc) OnBind(params *vgi.BindParams) (*vgi.BindResponse, error) {
 	return bindWithSecret[streamArgs](params, arrow.NewSchema(messageColumns, nil))
 }
 
+// NewState validates the arguments and secret and starts the cursor.
 func (f *StreamMessagesFunc) NewState(params *vgi.ProcessParams) (*StreamState, error) {
 	var a streamArgs
 	if err := vgi.BindArgs(params.Args, &a); err != nil {
@@ -344,6 +349,7 @@ func optMode(m uint8) any {
 	return int64(m)
 }
 
+// Process reads one batch from the stream and advances the offset cursor.
 func (f *StreamMessagesFunc) Process(ctx context.Context, params *vgi.ProcessParams, st *StreamState, out *vgirpc.OutputCollector) error {
 	if st.Done || st.Remaining <= 0 {
 		return out.Finish()
@@ -502,4 +508,3 @@ func peekRow(a peekArgs, m map[string]any) ([]any, error) {
 		vStrNE(props["correlation_id"]), vStrNE(props["reply_to"]), vStrNE(props["type"]), vStrNE(props["app_id"]),
 		vStrNE(props["user_id"]), vInt(props["priority"]), vInt(props["delivery_mode"]), vStrNE(props["expiration"])}, nil
 }
-
