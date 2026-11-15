@@ -144,10 +144,10 @@ func withExamples(tags map[string]string, lists ...[]vgi.CatalogExample) map[str
 const catalogDocLLM = "Inspect a RabbitMQ broker from SQL through its Management HTTP API, and read messages without consuming them. " +
 	"Every function needs a DuckDB secret: CREATE SECRET (TYPE rabbitmq, MANAGEMENT_URL 'http://host:15672', USERNAME/PASSWORD or " +
 	"BEARER_TOKEN for OAuth 2, AMQP_URL for stream_messages, optional TLS_CA_CERT/TLS_CLIENT_CERT/TLS_CLIENT_KEY/TLS_SKIP_VERIFY). " +
-	"Broker: overview, nodes (memory/disk alarms, partitions), vhosts. Topology: queues (backlog = messages_ready, in flight = " +
-	"messages_unacknowledged, type classic/quorum/stream), exchanges, bindings (routing graph). Clients: connections, channels, consumers. " +
-	"Access: users (never password hashes), permissions, topic_permissions. Config: policies, operator_policies, parameters and " +
-	"global_parameters (credentials in URIs masked), shovels, definitions_summary. Health: health_checks, feature_flags, deprecated_features. " +
+	"Reach for it to check broker and node health (memory/disk alarms, partitions, health checks, feature flags), find backlogs " +
+	"(messages_ready) and in-flight work (messages_unacknowledged) across classic, quorum and stream queues, follow the routing " +
+	"graph from exchanges through bindings, see which clients are connected and consuming, audit users and permissions (never " +
+	"password hashes) and review policies, runtime parameters and shovels (credentials in URIs masked). " +
 	"Messages: stream_messages(vhost, stream) reads a stream from an offset spec without consuming; peek_messages(vhost, queue, " +
 	"peek_requeue := true) fetches from a classic/quorum queue and re-queues (marks redelivered), so it refuses to run without the opt-in. " +
 	"vhost := and name := (substring, or regex with use_regex := true) are pushed into the API; listings page with an externalized cursor."
@@ -168,18 +168,27 @@ const catalogDocMDLong = "# RabbitMQ in DuckDB\n\n" +
 	"queues only with `peek_requeue := true`, because it re-queues what it fetches.\n\n" +
 	"Credentials come from a `rabbitmq` DuckDB secret. Everything is read-only except the opt-in re-queueing peek."
 
-const schemaDocLLM = "The main schema holds every function; all are table functions. Each takes an optional secret_name named argument " +
+const schemaDocLLM = "The main schema holds every function. Each table function takes an optional secret_name named argument " +
 	"(default: the rabbitmq secret whose scope matches). Most listings take vhost := (pushed into the API path); queues, exchanges, " +
 	"connections and channels also take name := (case-insensitive substring, or a regex with use_regex := true) and page_size := " +
 	"(max 500). Arguments, policy definitions and headers are `MAP(VARCHAR, VARCHAR)` with values as text: read one with " +
 	"arguments['x-queue-type']. Times are `TIMESTAMPTZ`, counters `BIGINT`, rates `DOUBLE` per second. stream_messages and peek_messages " +
-	"share the messaging columns sequence, timestamp, key, payload (`BLOB`), payload_text, headers. topic_matches and mask_uri are " +
-	"offline scalars that need no secret."
+	"share the messaging columns sequence, timestamp, key, payload (`BLOB`), payload_text, headers. Two offline scalars (topic " +
+	"pattern matching and URI credential masking) need no secret."
 
-// SchemaDocMD is the main schema's human-facing description (also its comment).
+// SchemaComment is the main schema's one-line comment.
+const SchemaComment = "One RabbitMQ broker's state through the Management HTTP API, plus non-consuming stream reads and an opt-in queue peek."
+
+// SchemaDocMD is the main schema's human-facing description.
 const SchemaDocMD = "## main\n\n" +
-	"Every function the RabbitMQ worker exposes. Management functions call the Management HTTP API named by a " +
-	"`rabbitmq` secret with read-only GETs; `stream_messages` reads streams over AMQP without consuming them.\n\n" +
+	"Management functions call the Management HTTP API named by a `rabbitmq` secret (username/password or an OAuth 2 " +
+	"bearer token, optional TLS client certificates) with read-only GETs, so results reflect that user's tags and vhost " +
+	"permissions. `stream_messages` reads streams over AMQP (the secret's `AMQP_URL`) from an offset spec without " +
+	"consuming them. `peek_messages` is the one exception to read-only: it fetches from a classic or quorum queue and " +
+	"re-queues what it took (marking it redelivered), so it runs only with `peek_requeue := true`.\n\n" +
+	"Conventions: `vhost :=` and `name :=` filters are pushed into the API, listings page with an externalized cursor, " +
+	"arguments and headers are `MAP(VARCHAR, VARCHAR)`, times `TIMESTAMPTZ`, rates per second. Passwords are never " +
+	"returned and credentials inside URIs are masked.\n\n" +
 	"Start with `overview()` and `queues()`; use `bindings()` to follow routes and `health_checks()` for alarms."
 
 // agentTask is one public analyst task for `vgi-lint simulate`.
