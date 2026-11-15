@@ -35,9 +35,13 @@ type category struct {
 // SchemaCategories group functions in docs and agent tools. Every function's
 // vgi.category must name one of these.
 var SchemaCategories = []category{
-	{Name: "text", Title: "Text", Description: "Functions that build or transform strings."},
-	{Name: "generators", Title: "Generators", Description: "Table functions that generate rows."},
-	{Name: "api", Title: "REST APIs", Description: "Table functions that read from HTTP APIs."},
+	{Name: "broker", Title: "Broker And Cluster", Description: "Cluster overview, nodes with resource alarms and partitions, and virtual hosts."},
+	{Name: "topology", Title: "Topology", Description: "Queues, exchanges and the bindings that route between them."},
+	{Name: "clients", Title: "Clients", Description: "Connections, channels and consumers."},
+	{Name: "access", Title: "Access Control", Description: "Users, vhost permissions and topic permissions (no password hashes)."},
+	{Name: "config", Title: "Configuration", Description: "Policies, operator policies, runtime and global parameters, shovels and the definitions export."},
+	{Name: "health", Title: "Health", Description: "Health checks, feature flags and deprecated features in use."},
+	{Name: "messages", Title: "Messages", Description: "Non-destructive stream reads and opt-in re-queueing peeks at queue messages."},
 }
 
 // mustJSON marshals v, panicking on failure (only static data is passed).
@@ -124,40 +128,45 @@ func withExamples(tags map[string]string, lists ...[]vgi.CatalogExample) map[str
 	return tags
 }
 
-const catalogDocLLM = "An example VGI worker generated from the Query.Farm starter template. It " +
-	"shows the three shapes most workers need: a vectorized scalar function with an overload, a " +
-	"deterministic table function with a named default argument, and a table function that pages " +
-	"through a REST API with retries and an optional bearer token taken from a DuckDB secret or an " +
-	"environment variable. Replace them with your own functions; keep the metadata complete so " +
-	"agents can discover and call them."
+const catalogDocLLM = "Inspect a RabbitMQ broker from SQL through its Management HTTP API, and read messages without consuming them. " +
+	"Every function needs a DuckDB secret: CREATE SECRET (TYPE rabbitmq, MANAGEMENT_URL 'http://host:15672', USERNAME/PASSWORD or " +
+	"BEARER_TOKEN for OAuth 2, AMQP_URL for stream_messages, optional TLS_CA_CERT/TLS_CLIENT_CERT/TLS_CLIENT_KEY/TLS_SKIP_VERIFY). " +
+	"Broker: overview, nodes (memory/disk alarms, partitions), vhosts. Topology: queues (backlog = messages_ready, in flight = " +
+	"messages_unacknowledged, type classic/quorum/stream), exchanges, bindings (routing graph). Clients: connections, channels, consumers. " +
+	"Access: users (never password hashes), permissions, topic_permissions. Config: policies, operator_policies, parameters and " +
+	"global_parameters (credentials in URIs masked), shovels, definitions_summary. Health: health_checks, feature_flags, deprecated_features. " +
+	"Messages: stream_messages(vhost, stream) reads a stream from an offset spec without consuming; peek_messages(vhost, queue, " +
+	"peek_requeue := true) fetches from a classic/quorum queue and re-queues (marks redelivered), so it refuses to run without the opt-in. " +
+	"vhost := and name := (substring, or regex with use_regex := true) are pushed into the API; listings page with an externalized cursor."
 
-// CatalogDocMD is the catalog's long human-facing description (also its comment).
-const CatalogDocMD = "# VGI rabbitmq worker\n\n" +
-	"**An example [VGI](https://query.farm/vgi) worker that brings custom functions into DuckDB " +
-	"SQL.** It was generated from the Query.Farm starter template and is meant to be renamed and " +
-	"rewritten: every function here demonstrates one pattern you will reuse, from vectorized scalars " +
-	"and streaming table functions to a REST API reader that retries politely and reads a bearer " +
-	"token from a DuckDB secret or the environment.\n\n" +
-	"The worker speaks Apache Arrow to DuckDB over stdin/stdout, a Unix socket, or HTTP, so the " +
-	"same code runs as a local subprocess or a hosted service. See the " +
-	"[VGI documentation](https://query.farm/vgi/docs/) to learn more."
+// CatalogDocMD is the catalog's comment: one short paragraph for directories.
+const CatalogDocMD = "RabbitMQ broker state as SQL tables through the Management HTTP API (queues, exchanges, bindings, " +
+	"connections, nodes, policies, permissions, health checks) plus non-destructive stream reads."
 
-const schemaDocLLM = "The `main` schema holds the starter template's example functions, one per common worker " +
-	"pattern. `greet(name)` and `greet(name, style)` are vectorized scalars: use them inside a " +
-	"projection or predicate, one result per row; `style` is a constant that must be 'casual' or " +
-	"'formal'. `sequence_table(count, step := 1)` is a deterministic table function that returns " +
-	"`count` rows of `(n, squared)`; use it for demos, tests, and as a template for generators. " +
-	"`fetch_items(base_url, page_size := 100)` reads every item from a paginated JSON REST API as " +
-	"`(id, name, category, price)` rows, streaming one page per batch, retrying rate-limited " +
-	"requests, and authenticating with a `rabbitmq_api` DuckDB secret or the `RABBITMQ_API_TOKEN` " +
-	"environment variable. Scalars cannot take named arguments; table functions can."
+const catalogDocMDLong = "# RabbitMQ in DuckDB\n\n" +
+	"Query a RabbitMQ cluster's state with SQL and join it with anything else DuckDB reads.\n\n" +
+	"- **Broker**: overview, nodes with memory/disk alarms and partitions, virtual hosts.\n" +
+	"- **Topology**: queues (depth, consumers, rates, type, policy, arguments), exchanges, bindings.\n" +
+	"- **Clients**: connections, channels, consumers.\n" +
+	"- **Access**: users (no password hashes), permissions, topic permissions.\n" +
+	"- **Config**: policies, operator policies, runtime parameters with masked credentials, shovels, definitions summary.\n" +
+	"- **Health**: health checks, feature flags, deprecated features in use.\n" +
+	"- **Messages**: `stream_messages` reads streams without consuming them; `peek_messages` peeks classic/quorum " +
+	"queues only with `peek_requeue := true`, because it re-queues what it fetches.\n\n" +
+	"Credentials come from a `rabbitmq` DuckDB secret. Everything is read-only except the opt-in re-queueing peek."
+
+const schemaDocLLM = "The main schema holds every function; all are table functions. Each takes an optional secret_name named argument " +
+	"(default: the rabbitmq secret whose scope matches). Most listings take vhost := (pushed into the API path); queues, exchanges, " +
+	"connections and channels also take name := (case-insensitive substring, or a regex with use_regex := true) and page_size := " +
+	"(max 500). Arguments, policy definitions and headers are MAP(VARCHAR, VARCHAR) with values as text: read one with " +
+	"arguments['x-queue-type']. Times are TIMESTAMPTZ, counters BIGINT, rates DOUBLE per second. stream_messages and peek_messages " +
+	"share the messaging columns sequence, timestamp, key, payload (BLOB), payload_text, headers."
 
 // SchemaDocMD is the main schema's human-facing description (also its comment).
 const SchemaDocMD = "## main\n\n" +
-	"The starter template's example functions, one per common worker pattern.\n\n" +
-	"- **Scalars** answer one question per row and slot into a projection or predicate.\n" +
-	"- **Table functions** return sets of rows, streamed to DuckDB in Arrow batches.\n" +
-	"- **REST readers** page through an HTTP API and authenticate with a DuckDB secret."
+	"Every function the RabbitMQ worker exposes. Management functions call the Management HTTP API named by a " +
+	"`rabbitmq` secret with read-only GETs; `stream_messages` reads streams over AMQP without consuming them.\n\n" +
+	"Start with `overview()` and `queues()`; use `bindings()` to follow routes and `health_checks()` for alarms."
 
 // agentTask is one public analyst task for `vgi-lint simulate`.
 type agentTask struct {
@@ -165,27 +174,32 @@ type agentTask struct {
 	Prompt string `json:"prompt"`
 }
 
-// agentTestTasks are graded privately by vgi-agent-tests.yaml.
+// agentTestTasks are graded privately by vgi-agent-tests.yaml. They assume a
+// rabbitmq secret pointing at the fixture broker (test/fixture).
 var agentTestTasks = []agentTask{
-	{Name: "formal_greeting", Prompt: "Using the rabbitmq worker, greet the name 'Grace' formally."},
-	{Name: "sum_of_squares", Prompt: "Using the rabbitmq worker, what is the sum of the squared column for the first 10 rows " +
-		"of the sequence with the default step?"},
-	{Name: "stepped_sequence", Prompt: "List the n values of a 4-row sequence that steps by 5, in ascending order."},
-	{Name: "items_per_category", Prompt: "The items API is running at https://vgi-starter-api.query-farm.services/v1. How many items does it have in each category?"},
+	{Name: "backlog", Prompt: "Which queues in the shop vhost have messages ready, and how many each?"},
+	{Name: "queue_types", Prompt: "How many queues of each type (classic, quorum, stream) does the broker have?"},
+	{Name: "routes_from_orders", Prompt: "Which queues and exchanges does the 'orders' exchange in vhost 'shop' route to, and with which routing keys?"},
+	{Name: "admins", Prompt: "Which RabbitMQ users are administrators?"},
+	{Name: "shovel_destination", Prompt: "Where does the shovel 'orders-to-archive' send messages? Give its destination URI."},
+	{Name: "policy_ttl", Prompt: "What message TTL does the policy orders-ttl set, and which queues does it apply to?"},
+	{Name: "node_alarms", Prompt: "Is any RabbitMQ node under a memory or disk alarm?"},
+	{Name: "stream_keys", Prompt: "How many messages per routing key are in the 'events' stream of vhost 'shop'? Do not consume anything."},
+	{Name: "server_version", Prompt: "Which RabbitMQ version is the broker running?"},
 }
 
 // CatalogTags are the catalog-level discovery tags.
 var CatalogTags = map[string]string{
-	"vgi.title":              "VGI Rabbitmq Worker",
-	"vgi.subtitle":           "Example DuckDB functions to rename and replace: a scalar, a table function and a REST API reader.",
+	"vgi.title":              "VGI RabbitMQ Worker",
+	"vgi.subtitle":           "RabbitMQ broker state via the Management API, plus non-destructive stream reads.",
 	"vgi.doc_llm":            catalogDocLLM,
-	"vgi.doc_md":             CatalogDocMD,
+	"vgi.doc_md":             catalogDocMDLong,
 	"vgi.source_url":         SourceURL,
 	"vgi.icon_url":           "https://query.farm/media-kit/products/vgi/vgi-logo.png",
 	"vgi.license":            "0BSD",
 	"vgi.author":             "Query.Farm",
-	"vgi.copyright":          "Copyright 2026 Query.Farm LLC",
-	"vgi.keywords":           keywordsArray("vgi, duckdb, starter template, example worker, rest api, table function"),
+	"vgi.copyright":          "Copyright 2026 Query Farm LLC - https://query.farm",
+	"vgi.keywords":           keywordsArray("rabbitmq, amqp, message broker, queues, streams, management api, monitoring, messaging, quorum queues"),
 	"vgi.support_contact":    SourceURL + "/issues",
 	"vgi.support_policy_url": SourceURL + "#support",
 	// Public analyst tasks for `vgi-lint simulate`; private graders live in vgi-agent-tests.yaml.
@@ -195,9 +209,9 @@ var CatalogTags = map[string]string{
 // schemaTags builds the main schema's tags; allExamples feeds vgi.example_queries.
 func schemaTags(allExamples []exampleQuery) map[string]string {
 	return map[string]string{
-		"vgi.title":           "Rabbitmq Functions",
-		"domain":              "examples",
-		"vgi.keywords":        keywordsArray("greeting, sequence, generator, rest api, pagination"),
+		"vgi.title":           "RabbitMQ Functions",
+		"domain":              "messaging",
+		"vgi.keywords":        keywordsArray("queues, exchanges, bindings, connections, nodes, policies, health checks, streams, peek"),
 		"vgi.doc_llm":         schemaDocLLM,
 		"vgi.doc_md":          SchemaDocMD,
 		"vgi.categories":      mustJSON(SchemaCategories),

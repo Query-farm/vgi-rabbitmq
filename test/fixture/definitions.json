@@ -1,0 +1,293 @@
+{
+  "rabbit_version": "4.0.0",
+  "users": [
+    {
+      "name": "admin",
+      "password_hash": "AQIDBACxkToWkl4TMxaf/GNdFrbF9uIuoGEVVbH8oL99yMEF",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [
+        "administrator"
+      ],
+      "limits": {}
+    },
+    {
+      "name": "monitor",
+      "password_hash": "BQYHCGGWcOjnVh/6RdqrRopjrz9F+rin+ZM9x3tRh2y+ioK4",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [
+        "monitoring"
+      ],
+      "limits": {}
+    },
+    {
+      "name": "orders-app",
+      "password_hash": "CQoLDHHQCTxGBSY9EJro/vlHEpXlCLiQnKiR+S7gbZB5k8Kf",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [],
+      "limits": {
+        "max-connections": 50
+      }
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/",
+      "description": "Default virtual host",
+      "tags": [],
+      "metadata": {
+        "description": "Default virtual host",
+        "tags": []
+      }
+    },
+    {
+      "name": "shop",
+      "description": "Online shop",
+      "tags": [
+        "production"
+      ],
+      "default_queue_type": "classic",
+      "metadata": {
+        "description": "Online shop",
+        "tags": [
+          "production"
+        ],
+        "default_queue_type": "classic"
+      }
+    }
+  ],
+  "permissions": [
+    {
+      "user": "admin",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "admin",
+      "vhost": "shop",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "monitor",
+      "vhost": "shop",
+      "configure": "^$",
+      "write": "^$",
+      "read": ".*"
+    },
+    {
+      "user": "orders-app",
+      "vhost": "shop",
+      "configure": "^orders\\..*",
+      "write": "^orders.*",
+      "read": "^orders\\..*"
+    }
+  ],
+  "topic_permissions": [
+    {
+      "user": "orders-app",
+      "vhost": "shop",
+      "exchange": "orders",
+      "write": "^orders\\.",
+      "read": ".*"
+    }
+  ],
+  "parameters": [
+    {
+      "vhost": "shop",
+      "component": "shovel",
+      "name": "orders-to-archive",
+      "value": {
+        "src-protocol": "amqp091",
+        "src-uri": "amqp://",
+        "src-queue": "legacy.outbox",
+        "dest-protocol": "amqp091",
+        "dest-uri": "amqp://shovel_user:S3cr3tShovelPass@archive.invalid:5672/archive",
+        "dest-queue": "orders.archived",
+        "ack-mode": "on-confirm",
+        "src-delete-after": "never",
+        "reconnect-delay": 3600
+      }
+    },
+    {
+      "vhost": "shop",
+      "component": "federation-upstream",
+      "name": "dc2",
+      "value": {
+        "uri": "amqps://fed_user:FedS3cret@dc2.invalid:5671/shop?cacertfile=/etc/ca.pem",
+        "expires": 3600000,
+        "ack-mode": "on-confirm",
+        "trust-user-id": false
+      }
+    }
+  ],
+  "global_parameters": [
+    {
+      "name": "cluster_name",
+      "value": "vgi-fixture"
+    }
+  ],
+  "policies": [
+    {
+      "vhost": "shop",
+      "name": "orders-ttl",
+      "pattern": "^orders\\.",
+      "apply-to": "queues",
+      "priority": 1,
+      "definition": {
+        "message-ttl": 86400000,
+        "max-length": 100000
+      }
+    }
+  ],
+  "queues": [
+    {
+      "name": "orders.created",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "orders.archive",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "orders.dlq",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "payments",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "dlx"
+      }
+    },
+    {
+      "name": "events",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "stream",
+        "x-max-length-bytes": 100000000,
+        "x-stream-max-segment-size-bytes": 1000000
+      }
+    },
+    {
+      "name": "health.check",
+      "vhost": "/",
+      "durable": false,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "legacy.outbox",
+      "vhost": "shop",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "orders",
+      "vhost": "shop",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlx",
+      "vhost": "shop",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "audit",
+      "vhost": "shop",
+      "type": "headers",
+      "durable": true,
+      "auto_delete": false,
+      "internal": true,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "orders",
+      "vhost": "shop",
+      "destination": "orders.created",
+      "destination_type": "queue",
+      "routing_key": "orders.created.*",
+      "arguments": {}
+    },
+    {
+      "source": "orders",
+      "vhost": "shop",
+      "destination": "orders.archive",
+      "destination_type": "queue",
+      "routing_key": "orders.#",
+      "arguments": {}
+    },
+    {
+      "source": "orders",
+      "vhost": "shop",
+      "destination": "events",
+      "destination_type": "queue",
+      "routing_key": "#",
+      "arguments": {}
+    },
+    {
+      "source": "orders",
+      "vhost": "shop",
+      "destination": "audit",
+      "destination_type": "exchange",
+      "routing_key": "orders.paid",
+      "arguments": {}
+    },
+    {
+      "source": "dlx",
+      "vhost": "shop",
+      "destination": "orders.dlq",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "orders",
+      "vhost": "shop",
+      "destination": "payments",
+      "destination_type": "queue",
+      "routing_key": "orders.paid",
+      "arguments": {
+        "x-match": "all"
+      }
+    }
+  ]
+}

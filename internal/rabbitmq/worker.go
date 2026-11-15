@@ -1,7 +1,8 @@
-// Package rabbitmq assembles the example functions into a catalog.
+// Package rabbitmq exposes a RabbitMQ broker (Management HTTP API and
+// non-destructive stream reads) as a VGI catalog.
 //
-// To add a function: write it (see greet.go / sequence.go / fetch_items.go),
-// then register it in NewWorker below.
+// To add a function: write it (see broker.go, topology.go, clients.go,
+// access.go or messages.go), then register it in NewWorker below.
 //
 // Run it:
 //
@@ -20,7 +21,11 @@ import (
 
 // allExamples lists every function's examples for the schema-level tag.
 func allExamples() []exampleQuery {
-	return exampleQueries(greetExamples, greetWithStyleExamples, sequenceExamples, fetchExamples)
+	return exampleQueries(overviewExamples, nodesExamples, vhostsExamples, queuesExamples, exchangesExamples,
+		bindingsExamples, connectionsExamples, channelsExamples, consumersExamples, usersExamples, permissionsExamples,
+		topicPermissionsExamples, policyExamples, operatorPolicyExamples, parametersExamples, globalParametersExamples,
+		shovelsExamples, definitionsExamples, healthExamples, featureFlagExamples, deprecatedExamples, streamExamples,
+		peekExamples)
 }
 
 // NewWorker builds the worker: one catalog, one main schema. Extra options
@@ -37,9 +42,12 @@ func NewWorker(opts ...vgi.WorkerOption) *vgi.Worker {
 		vgi.WithSecretTypes(APISecretType),
 	}
 	w := vgi.NewWorker(append(base, opts...)...)
-	w.RegisterScalar(vgi.AsScalarFunction[greetArgs](&Greet{}))
-	w.RegisterScalar(vgi.AsScalarFunction[greetWithStyleArgs](&GreetWithStyle{}))
-	w.RegisterTable(NewSequenceTable())
-	w.RegisterTable(NewFetchItems())
+	for _, f := range []vgi.TableFunction{newOverview(), newNodes(), newVhosts(), newQueues(), newExchanges(), newBindings(),
+		newConnections(), newChannels(), newConsumers(), newUsers(), newPermissions(), newTopicPermissions(),
+		newUserPolicies(), newOperatorPolicies(), newParameters(), newGlobalParameters(), newShovels(),
+		newDefinitionsSummary(), newHealthChecks(), newFeatureFlags(), newDeprecatedFeatures(), newPeekMessages()} {
+		w.RegisterTable(f)
+	}
+	w.RegisterTable(vgi.AsTableFunction[StreamState](&StreamMessagesFunc{}))
 	return w
 }

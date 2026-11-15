@@ -8,6 +8,7 @@ require (
 	github.com/Query-farm/vgi-go v0.42.0
 	github.com/Query-farm/vgi-rpc-go v0.37.0
 	github.com/apache/arrow-go/v18 v18.7.0
+	github.com/rabbitmq/amqp091-go v1.16.0
 	modernc.org/sqlite v1.56.0
 )
 
