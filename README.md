@@ -25,7 +25,7 @@ refuses to run unless you pass `peek_requeue := true` (see [Reading messages](#r
 ```sql
 INSTALL vgi FROM community;     -- Haybarn 2.0; on DuckDB 2.0 use the query_farm repository
 LOAD vgi;
-ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'github-auto://Query-farm/vgi-rabbitmq@v0.1.2');
+ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'github-auto://Query-farm/vgi-rabbitmq@v0.2.0');
 
 CREATE SECRET (TYPE rabbitmq, MANAGEMENT_URL 'http://localhost:15672',
                USERNAME 'monitor', PASSWORD '...',
@@ -45,9 +45,9 @@ The secret type is registered by the worker, so run `CREATE SECRET` after `ATTAC
 - **DuckDB 2.0**:
   `SET allow_extension_repositories = 'allowed'; CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm'; INSTALL vgi FROM query_farm; LOAD vgi FROM query_farm;`
   then attach as above.
-- **Docker** (HTTP): `docker run -p 8000:8000 ghcr.io/query-farm/vgi-rabbitmq:0.1.2`, then
+- **Docker** (HTTP): `docker run -p 8000:8000 ghcr.io/query-farm/vgi-rabbitmq:0.2.0`, then
   `ATTACH 'rabbitmq' (TYPE vgi, LOCATION 'http://localhost:8000')`.
-- **Go**: `go install github.com/Query-farm/vgi-rabbitmq/cmd/vgi-rabbitmq-worker@v0.1.2`,
+- **Go**: `go install github.com/Query-farm/vgi-rabbitmq/cmd/vgi-rabbitmq-worker@v0.2.0`,
   then attach the binary by absolute path.
 - **From source**: `make build` (Go 1.26+, pure Go, no cgo), then
   `ATTACH 'rabbitmq' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-rabbitmq-worker')`.
